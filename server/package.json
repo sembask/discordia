@@ -1,0 +1,18 @@
+{
+  "name": "discordia-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Servidor de sinalização do Discordia (salas, chat e troca de ofertas WebRTC).",
+  "type": "module",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

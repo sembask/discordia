@@ -1,0 +1,45 @@
+# Sobe o servidor do Discordia (e, opcionalmente, um servidor TURN).
+#
+#   docker compose up -d                       # só o servidor
+#   docker compose --profile turn up -d        # servidor + TURN (coturn)
+#
+# Variáveis (num arquivo .env ao lado deste):
+#   TURN_SECRET=uma-senha-longa-e-aleatoria
+#   PUBLIC_IP=203.0.113.10        # IP público da máquina
+#   TURN_URLS=turn:203.0.113.10:3478,turn:203.0.113.10:3478?transport=tcp
+
+services:
+  discordia:
+    build: .
+    ports:
+      - '8787:8787'
+    environment:
+      TURN_URLS: ${TURN_URLS:-}
+      TURN_SECRET: ${TURN_SECRET:-}
+    restart: unless-stopped
+
+  # TURN: retransmite a mídia quando dois amigos não conseguem se ligar direto
+  # (NAT de operadora, rede de empresa/faculdade). Abra no firewall:
+  # 3478/udp, 3478/tcp e 49160-49200/udp.
+  coturn:
+    image: coturn/coturn:4.6
+    profiles: ['turn']
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - -n
+      - --listening-port=3478
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --realm=discordia
+      - --external-ip=${PUBLIC_IP}
+      - --min-port=49160
+      - --max-port=49200
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255

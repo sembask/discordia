@@ -1,0 +1,59 @@
+# Gera os instaladores e publica numa Release do GitHub.
+#
+# Como usar: crie uma tag de versão e empurre.
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# O endereço do servidor que vem preenchido no app sai da variável do
+# repositório DISCORDIA_SERVER (Settings → Secrets and variables → Actions →
+# Variables), ex.: wss://discordia.seudominio.com
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: app
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VITE_DEFAULT_SERVER: ${{ vars.DISCORDIA_SERVER }}
+      # Sem certificado de assinatura (o Windows/macOS vai avisar na 1ª abertura).
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Instaladores
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            npx electron-builder --publish always
+          else
+            npx electron-builder --publish never
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: discordia-${{ matrix.os }}
+          path: |
+            app/release/*.exe
+            app/release/*.dmg
+            app/release/*.AppImage
+          if-no-files-found: ignore
