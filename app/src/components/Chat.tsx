@@ -48,7 +48,7 @@ export function Chat({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <aside className="animate-fade flex w-80 shrink-0 flex-col border-l border-line bg-panel">
+    <aside className="animate-fade absolute inset-y-0 right-0 z-30 flex w-full shrink-0 flex-col border-l border-line bg-panel shadow-soft sm:w-80 lg:static lg:shadow-none">
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
         <span className="font-bold">Chat da sala</span>
         <IconButton label="Fechar chat" onClick={onClose} className="size-8">

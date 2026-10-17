@@ -9,6 +9,7 @@ import {
   MonitorOff,
   MonitorUp,
   PhoneOff,
+  Users,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -40,7 +41,20 @@ function useShares(): Share[] {
   return shares;
 }
 
-export function Stage({ chatOpen, onToggleChat, onShare }: { chatOpen: boolean; onToggleChat: () => void; onShare: () => void }) {
+/** Celular e alguns navegadores não conseguem capturar a tela (só assistir). */
+export const canShareScreen = !!navigator.mediaDevices?.getDisplayMedia;
+
+export function Stage({
+  chatOpen,
+  onToggleChat,
+  onShare,
+  onPeople,
+}: {
+  chatOpen: boolean;
+  onToggleChat: () => void;
+  onShare: () => void;
+  onPeople: () => void;
+}) {
   const shares = useShares();
   const [focus, setFocus] = useState<string | null>(null);
   const focused = shares.find((s) => s.key === focus) ?? shares.find((s) => s.peerId !== null) ?? shares[0] ?? null;
@@ -48,7 +62,7 @@ export function Stage({ chatOpen, onToggleChat, onShare }: { chatOpen: boolean; 
 
   return (
     <main className="relative flex min-w-0 flex-1 flex-col bg-stage">
-      <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-2 sm:p-4">
         {focused ? (
           <>
             <ScreenTile share={focused} large />
@@ -66,7 +80,7 @@ export function Stage({ chatOpen, onToggleChat, onShare }: { chatOpen: boolean; 
           <VoiceGrid onShare={onShare} />
         )}
       </div>
-      <ControlBar chatOpen={chatOpen} onToggleChat={onToggleChat} onShare={onShare} />
+      <ControlBar chatOpen={chatOpen} onToggleChat={onToggleChat} onShare={onShare} onPeople={onPeople} />
     </main>
   );
 }
@@ -170,7 +184,7 @@ function VoiceGrid({ onShare }: { onShare: () => void }) {
     Object.values(peers).map((p) => ({ id: p.id, name: p.name, speaking: !!speaking[p.id] && !p.state.muted, muted: p.state.muted })),
   );
   return (
-    <div className="bg-grid flex flex-1 flex-col items-center justify-center gap-10 rounded-2xl border border-line bg-panel/40 p-8">
+    <div className="bg-grid flex flex-1 flex-col items-center justify-center gap-10 overflow-y-auto rounded-2xl border border-line bg-panel/40 p-4 sm:p-8">
       <div className="flex max-w-3xl flex-wrap justify-center gap-6">
         {people.map((p) => (
           <div key={p.id} className="animate-pop flex w-28 flex-col items-center gap-2.5">
@@ -188,39 +202,52 @@ function VoiceGrid({ onShare }: { onShare: () => void }) {
       </div>
       <div className="text-center">
         <p className="text-sm text-muted">Ninguém está mostrando a tela.</p>
-        <button
+        {canShareScreen && <button
           onClick={onShare}
           className="mt-3 inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-accent to-accent-2 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_20px_-8px_var(--accent)] transition hover:brightness-110"
         >
           <MonitorUp size={17} /> Compartilhar minha tela
-        </button>
+        </button>}
       </div>
     </div>
   );
 }
 
-function ControlBar({ chatOpen, onToggleChat, onShare }: { chatOpen: boolean; onToggleChat: () => void; onShare: () => void }) {
+function ControlBar({
+  chatOpen,
+  onToggleChat,
+  onShare,
+  onPeople,
+}: {
+  chatOpen: boolean;
+  onToggleChat: () => void;
+  onShare: () => void;
+  onPeople: () => void;
+}) {
   const muted = useStore(call.store, (s) => s.muted);
   const deafened = useStore(call.store, (s) => s.deafened);
   const sharing = useStore(call.store, (s) => !!s.localScreen);
   const unread = useStore(call.store, (s) => s.unread);
   return (
-    <div className="flex shrink-0 justify-center pb-4">
-      <div className="flex items-center gap-1.5 rounded-2xl border border-line bg-panel p-1.5 shadow-soft">
+    <div className="flex shrink-0 justify-center pb-3 sm:pb-4">
+      <div className="flex items-center gap-1 rounded-2xl border border-line bg-panel p-1.5 shadow-soft sm:gap-1.5">
+        <IconButton label="Pessoas na sala" onClick={onPeople} className="size-11 lg:hidden">
+          <Users size={19} />
+        </IconButton>
         <IconButton label={muted ? 'Desmutar' : 'Mutar'} danger={muted} onClick={() => call.toggleMute()} className="size-11">
           {muted ? <MicOff size={19} /> : <Mic size={19} />}
         </IconButton>
         <IconButton label={deafened ? 'Voltar a ouvir' : 'Ensurdecer'} danger={deafened} onClick={() => call.toggleDeafen()} className="size-11">
           {deafened ? <HeadphoneOff size={19} /> : <Headphones size={19} />}
         </IconButton>
-        <IconButton
+        {canShareScreen && <IconButton
           label={sharing ? 'Parar de compartilhar' : 'Compartilhar tela'}
           active={sharing}
           onClick={() => (sharing ? call.stopScreen() : onShare())}
           className="size-11"
         >
           {sharing ? <MonitorOff size={19} /> : <MonitorUp size={19} />}
-        </IconButton>
+        </IconButton>}
         <div className="relative">
           <IconButton label="Chat" active={chatOpen} onClick={onToggleChat} className="size-11">
             <MessageSquare size={19} />
@@ -235,9 +262,9 @@ function ControlBar({ chatOpen, onToggleChat, onShare }: { chatOpen: boolean; on
         <button
           onClick={() => call.leave()}
           title="Sair da sala"
-          className="flex h-11 items-center gap-2 rounded-xl bg-danger px-4 text-sm font-semibold text-white transition hover:brightness-110"
+          className="flex h-11 items-center gap-2 rounded-xl bg-danger px-3 text-sm font-semibold text-white transition hover:brightness-110 sm:px-4"
         >
-          <PhoneOff size={18} /> Sair
+          <PhoneOff size={18} /> <span className="hidden sm:inline">Sair</span>
         </button>
       </div>
     </div>

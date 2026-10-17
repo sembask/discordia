@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Check, Copy, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Signal, Volume2, WifiOff } from 'lucide-react';
+import { Check, Copy, Link2, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Signal, Volume2, WifiOff } from 'lucide-react';
 import { call, type RemotePeer } from '../lib/call';
-import { settings } from '../lib/settings';
+import { inviteLink, settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { Avatar, IconButton, cx } from './ui';
 
@@ -14,14 +14,15 @@ export function Sidebar() {
   const deafened = useStore(call.store, (s) => s.deafened);
   const localScreen = useStore(call.store, (s) => s.localScreen);
   const name = useStore(settings, (s) => s.name);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'link' | 'code' | null>(null);
   const list = Object.values(peers).sort((a, b) => a.name.localeCompare(b.name));
 
-  const copy = async () => {
+  const link = room ? inviteLink(room) : null;
+  const copy = async (what: 'link' | 'code') => {
     if (!room) return;
-    await navigator.clipboard.writeText(room);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    await navigator.clipboard.writeText(what === 'link' && link ? link : room);
+    setCopied(what);
+    setTimeout(() => setCopied(null), 1500);
   };
 
   return (
@@ -29,13 +30,23 @@ export function Sidebar() {
       <div className="border-b border-line p-4">
         <div className="text-xs font-semibold tracking-wide text-muted uppercase">Sala</div>
         <button
-          onClick={copy}
-          title="Copiar código pra mandar aos amigos"
+          onClick={() => copy('code')}
+          title="Copiar o código da sala"
           className="group mt-1 flex w-full items-center justify-between gap-2 rounded-xl border border-line bg-panel-2 px-3 py-2 text-left transition-colors hover:border-accent"
         >
           <span className="selectable truncate font-mono text-sm font-semibold">{room}</span>
-          {copied ? <Check size={15} className="shrink-0 text-success" /> : <Copy size={15} className="shrink-0 text-muted group-hover:text-accent" />}
+          {copied === 'code' ? <Check size={15} className="shrink-0 text-success" /> : <Copy size={15} className="shrink-0 text-muted group-hover:text-accent" />}
         </button>
+        {link && (
+          <button
+            onClick={() => copy('link')}
+            title={link}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-accent-soft px-3 py-2 text-sm font-semibold text-accent transition hover:brightness-110"
+          >
+            {copied === 'link' ? <Check size={15} /> : <Link2 size={15} />}
+            {copied === 'link' ? 'Link copiado!' : 'Copiar link de convite'}
+          </button>
+        )}
         <div className={cx('mt-2 flex items-center gap-1.5 text-xs font-medium', status === 'connected' ? 'text-success' : 'text-warning')}>
           {status === 'connected' ? <Signal size={13} /> : <WifiOff size={13} />}
           {status === 'connected' ? 'Voz conectada' : status === 'reconnecting' ? 'Reconectando…' : 'Conectando…'}
@@ -50,7 +61,7 @@ export function Sidebar() {
         ))}
         {list.length === 0 && (
           <p className="px-3 py-4 text-sm text-faint">
-            Ninguém por aqui ainda. Copie o código acima e mande pra galera.
+            Ninguém por aqui ainda. Copie o link de convite acima e mande pra galera.
           </p>
         )}
       </div>

@@ -29,8 +29,11 @@ export function App() {
   );
 }
 
+const wide = () => window.matchMedia('(min-width: 1024px)').matches;
+
 function Room() {
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(wide);
+  const [people, setPeople] = useState(false);
   const [picker, setPicker] = useState(false);
   const status = useStore(call.store, (s) => s.status);
   const error = useStore(call.store, (s) => s.error);
@@ -53,8 +56,17 @@ function Room() {
 
   return (
     <div className="relative flex min-h-0 flex-1">
-      <Sidebar />
-      <Stage chatOpen={chatOpen} onToggleChat={() => setChatOpen((o) => !o)} onShare={() => setPicker(true)} />
+      {/* Tela larga: barra lateral fixa. Celular: gaveta que abre por cima. */}
+      <div className={people ? 'absolute inset-0 z-30 flex lg:static lg:z-auto' : 'hidden lg:flex'}>
+        <Sidebar />
+        {people && <div className="flex-1 bg-black/40 lg:hidden" onClick={() => setPeople(false)} />}
+      </div>
+      <Stage
+        chatOpen={chatOpen}
+        onToggleChat={() => setChatOpen((o) => !o)}
+        onShare={() => setPicker(true)}
+        onPeople={() => setPeople(true)}
+      />
       {chatOpen && <Chat onClose={() => setChatOpen(false)} />}
       {picker && <ScreenPicker onClose={() => setPicker(false)} />}
 

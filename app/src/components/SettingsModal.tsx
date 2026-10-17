@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AudioLines, Monitor, Moon, Palette, Server, Sun, Video } from 'lucide-react';
 import { call } from '../lib/call';
-import { settings, type Settings } from '../lib/settings';
+import { isWeb, settings, type Settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { audio } from '../lib/audio';
 import { Field, Modal, Segmented, Select, TextInput, Toggle, cx } from './ui';
@@ -25,14 +25,14 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('appearance');
   return (
     <Modal title="Configurações" onClose={onClose} wide>
-      <div className="flex min-h-[460px]">
-        <nav className="w-52 shrink-0 space-y-1 border-r border-line p-3">
-          {TABS.map((t) => (
+      <div className="flex min-h-[460px] flex-col sm:flex-row">
+        <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-line p-3 sm:w-52 sm:flex-col sm:border-r sm:border-b-0">
+          {TABS.filter((t) => !(isWeb && t.id === 'server')).map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               className={cx(
-                'flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium transition-colors',
+                'flex shrink-0 items-center gap-2.5 rounded-xl px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors sm:w-full',
                 tab === t.id ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-hover hover:text-fg',
               )}
             >
@@ -40,7 +40,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             </button>
           ))}
         </nav>
-        <div className="min-w-0 flex-1 space-y-6 p-6">
+        <div className="min-w-0 flex-1 space-y-6 p-4 sm:p-6">
           {tab === 'appearance' && <Appearance />}
           {tab === 'voice' && <Voice />}
           {tab === 'video' && <VideoTab />}

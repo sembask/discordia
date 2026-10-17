@@ -23,14 +23,41 @@ export interface Settings {
 
 const KEY = 'discordia.settings';
 
+export const isWeb = !window.discordia && location.protocol.startsWith('http');
+
 function defaultServer(): string {
+  // Versão web: o próprio site É o servidor, então usa a mesma origem.
+  if (isWeb) return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   const env = import.meta.env.VITE_DEFAULT_SERVER as string | undefined;
-  if (env) return env;
-  // Aberto pelo navegador a partir do próprio servidor: usa a mesma origem.
-  if (!window.discordia && location.protocol.startsWith('http')) {
-    return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+  return env || 'ws://localhost:8787';
+}
+
+/** Endereço do site a partir do endereço do servidor (wss://x → https://x). */
+function siteOf(serverUrl: string): string | null {
+  try {
+    const u = new URL(serverUrl);
+    if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return null;
+    return `${u.protocol === 'wss:' ? 'https:' : 'http:'}//${u.host}`;
+  } catch {
+    return null;
   }
-  return 'ws://localhost:8787';
+}
+
+/** Link que abre a sala direto (o servidor também entrega a versão web). */
+export function inviteLink(room: string): string | null {
+  const site = isWeb ? location.origin : siteOf(settings.get().serverUrl);
+  return site ? `${site}/?sala=${encodeURIComponent(room)}` : null;
+}
+
+/** Sala vinda de um link de convite (?sala=...), se houver. */
+export function roomFromLink(): string {
+  return new URLSearchParams(location.search).get('sala') ?? '';
+}
+
+/** Tira o ?sala= da barra de endereço (pra não reentrar sozinho depois). */
+export function clearRoomLink() {
+  if (!location.search.includes('sala=')) return;
+  history.replaceState(null, '', location.pathname + location.hash);
 }
 
 const DEFAULTS: Settings = {
@@ -52,7 +79,8 @@ const DEFAULTS: Settings = {
 function load(): Settings {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || '{}');
-    return { ...DEFAULTS, ...raw };
+    // Na versão web o servidor é sempre o próprio site.
+    return { ...DEFAULTS, ...raw, ...(isWeb ? { serverUrl: DEFAULTS.serverUrl } : {}) };
   } catch {
     return { ...DEFAULTS };
   }

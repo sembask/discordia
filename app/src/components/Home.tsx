@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ArrowRight, AudioLines, Clock, Dices, MonitorUp, Server, ShieldCheck, Sparkles } from 'lucide-react';
 import { call } from '../lib/call';
-import { rememberRoom, settings } from '../lib/settings';
+import { clearRoomLink, isWeb, rememberRoom, roomFromLink, settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { Button, Field, Segmented, TextInput } from './ui';
 
@@ -30,8 +30,9 @@ export function Home({ onSettings }: { onSettings: () => void }) {
   const recent = useStore(settings, (s) => s.recentRooms);
   const error = useStore(call.store, (s) => s.error);
   const status = useStore(call.store, (s) => s.status);
-  const [mode, setMode] = useState<'create' | 'join'>('create');
-  const [code, setCode] = useState('');
+  const [linkRoom] = useState(roomFromLink);
+  const [mode, setMode] = useState<'create' | 'join'>(linkRoom ? 'join' : 'create');
+  const [code, setCode] = useState(linkRoom);
   const [newRoom, setNewRoom] = useState(randomRoom);
 
   const room = mode === 'create' ? cleanRoom(newRoom) : cleanRoom(code);
@@ -40,6 +41,7 @@ export function Home({ onSettings }: { onSettings: () => void }) {
   const go = (target = room) => {
     if (!name.trim() || !target) return;
     rememberRoom(target);
+    clearRoomLink();
     void call.join(settings.get().serverUrl, target, name.trim());
   };
 
@@ -68,8 +70,16 @@ export function Home({ onSettings }: { onSettings: () => void }) {
         </section>
 
         <section className="animate-pop rounded-3xl border border-line bg-panel p-7 shadow-soft">
-          <h2 className="text-xl font-bold">Entrar numa sala</h2>
-          <p className="mt-1 text-sm text-muted">Crie uma sala e mande o código pros amigos.</p>
+          <h2 className="text-xl font-bold">{linkRoom ? 'Você foi convidado!' : 'Entrar numa sala'}</h2>
+          <p className="mt-1 text-sm text-muted">
+            {linkRoom ? (
+              <>
+                Sala <span className="font-semibold text-fg">{linkRoom}</span>. Digite seu nome e entre.
+              </>
+            ) : (
+              'Crie uma sala e mande o link pros amigos.'
+            )}
+          </p>
 
           <div className="mt-6 space-y-5">
             <Field label="Seu nome">
@@ -140,14 +150,14 @@ export function Home({ onSettings }: { onSettings: () => void }) {
             </div>
           )}
 
-          <button
+          {!isWeb && <button
             onClick={onSettings}
             className="mt-5 flex w-full items-center gap-2 truncate text-xs text-faint transition-colors hover:text-muted"
             title="Trocar servidor"
           >
             <Server size={13} className="shrink-0" />
             <span className="truncate">{serverUrl}</span>
-          </button>
+          </button>}
         </section>
       </div>
     </div>

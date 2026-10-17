@@ -38,6 +38,24 @@ discordia/
 └── server/     Servidor de sinalização (Node + ws)
 ```
 
+## Versão web (sem instalar nada)
+
+O mesmo servidor entrega o app pelo navegador. Com ele no ar em
+`https://seu.dominio`:
+
+- Qualquer amigo entra pelo navegador (Chrome, Edge, Firefox, Safari).
+- **Link de convite**: na sala, clique em *Copiar link de convite* e mande
+  (`https://seu.dominio/?sala=lobo-azul-42`). Quem clica já cai na sala certa,
+  só digita o nome.
+- **Instala como app**: no Chrome/Edge, o ícone de instalar na barra de
+  endereço cria um atalho com cara de programa.
+- **Celular**: dá pra conversar e assistir a tela dos amigos. Transmitir a
+  própria tela pelo celular não é suportado pelos navegadores de celular.
+
+Web × app de baixar: os dois conversam entre si na mesma sala. O app instalado
+tem o seletor de tela com miniaturas e, no Windows, o áudio do computador sem
+precisar marcar nada no navegador; o resto é igual.
+
 ## Rodar no seu PC (desenvolvimento)
 
 Requisito: Node.js 20 ou mais novo.
@@ -138,9 +156,10 @@ assinatura é pago), então o sistema avisa uma vez:
 
 ## Usando
 
-1. Digite seu nome, clique em **Criar e entrar** e mande o código da sala pros
-   amigos (clique no código na barra lateral pra copiar).
-2. Eles escolhem **Tenho um código**, colam e entram.
+1. Digite seu nome, clique em **Criar e entrar** e mande o **link de convite**
+   (botão na barra lateral) ou só o código da sala.
+2. Quem recebe o link clica e entra; quem recebe o código escolhe **Tenho um
+   código** e cola.
 3. **Compartilhar tela** → escolha a tela ou janela, a resolução e o fps →
    **Transmitir**. Duplo clique no vídeo de um amigo abre em tela cheia; passe o
    mouse por cima pra ver resolução, fps, bitrate e codec ao vivo.
