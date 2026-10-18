@@ -27,7 +27,7 @@ ENV NODE_ENV=production \
     WEB_DIR=/srv/public
 COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-COPY server/index.js server/server.js ./
+COPY server/*.js ./
 COPY --from=web /app/dist ./public
 EXPOSE 8787
 USER node

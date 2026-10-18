@@ -34,6 +34,17 @@ jobs:
       - name: Interface
         working-directory: app
         run: npm ci && npm run typecheck && npm run build
+      # O que vai pra VPS é a imagem Docker: confere que ela constrói e o servidor sobe.
+      - name: Imagem Docker sobe e responde
+        run: |
+          docker build -t discordia-ci .
+          docker run -d --name ci -p 8787:8787 -e MUSIC_META=off discordia-ci
+          for i in $(seq 1 40); do
+            if curl -fs localhost:8787/health && curl -fs -o /dev/null localhost:8787/player.html; then exit 0; fi
+            sleep 1
+          done
+          docker logs ci
+          exit 1
 
   deploy:
     needs: test
