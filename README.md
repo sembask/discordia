@@ -104,6 +104,14 @@ WebSocket (EasyPanel e Caddy já permitem por padrão).
 > Navegadores exigem HTTPS pra liberar o microfone fora do `localhost`. O app
 > desktop não tem essa restrição, mas a versão web sim.
 
+### Deploy automático (EasyPanel)
+
+O workflow `.github/workflows/deploy.yml` roda os testes a cada push e, se
+passarem, chama o gatilho de deploy do EasyPanel. Pra ligar, crie o secret
+**`EASYPANEL_DEPLOY_URL`** (Settings → Secrets and variables → Actions → New
+repository secret) com o link de deploy da aba Deployments do EasyPanel.
+Não coloque esse link no código: o repositório é público.
+
 ### TURN (quando alguém não consegue conectar)
 
 Na maioria das casas a conexão direta funciona. Em redes muito fechadas (NAT de

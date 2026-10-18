@@ -1,0 +1,53 @@
+# Deploy automático no EasyPanel.
+#
+# A cada push no branch do servidor, roda os testes e, se passarem, chama o
+# gatilho de deploy do EasyPanel (que baixa o código e reconstrói o container).
+#
+# O endereço do gatilho fica no secret EASYPANEL_DEPLOY_URL
+# (Settings → Secrets and variables → Actions → New repository secret).
+# Nunca coloque esse link no código: o repositório é público.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main, claude/pensive-tesla-nzl5ua]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Servidor
+        working-directory: server
+        run: npm ci && npm test
+      - name: Interface
+        working-directory: app
+        run: npm ci && npm run typecheck && npm run build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar o EasyPanel
+        env:
+          DEPLOY_URL: ${{ secrets.EASYPANEL_DEPLOY_URL }}
+        run: |
+          if [ -z "$DEPLOY_URL" ]; then
+            echo "::warning::Secret EASYPANEL_DEPLOY_URL não configurado; deploy pulado."
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/resp -w '%{http_code}' -X POST --max-time 60 --retry 3 --retry-delay 5 "$DEPLOY_URL")
+          echo "EasyPanel respondeu HTTP $code"
+          cat /tmp/resp || true
+          if [ "$code" -ge 400 ]; then exit 1; fi
