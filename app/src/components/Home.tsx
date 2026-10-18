@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { ArrowRight, AudioLines, Clock, Dices, MonitorUp, Server, ShieldCheck, Sparkles } from 'lucide-react';
+import { ArrowRight, AudioLines, Camera, Clock, Dices, MonitorUp, Server, ShieldCheck, Sparkles } from 'lucide-react';
 import { call } from '../lib/call';
 import { clearRoomLink, isWeb, rememberRoom, roomFromLink, settings } from '../lib/settings';
 import { useStore } from '../lib/store';
-import { Button, Field, Segmented, TextInput } from './ui';
+import { Avatar, Button, Field, Segmented, TextInput } from './ui';
+import { pickImageFile, prepareAvatar } from '../lib/image';
 
 const ADJ = ['azul', 'veloz', 'feliz', 'bravo', 'sereno', 'dourado', 'noturno', 'selvagem', 'ruivo', 'astuto'];
 const NOUN = ['lobo', 'corvo', 'tigre', 'raposa', 'falcao', 'urso', 'dragao', 'panda', 'lince', 'polvo'];
@@ -26,6 +27,7 @@ function cleanRoom(raw: string) {
 
 export function Home({ onSettings }: { onSettings: () => void }) {
   const name = useStore(settings, (s) => s.name);
+  const avatar = useStore(settings, (s) => s.avatar);
   const serverUrl = useStore(settings, (s) => s.serverUrl);
   const recent = useStore(settings, (s) => s.recentRooms);
   const error = useStore(call.store, (s) => s.error);
@@ -83,13 +85,29 @@ export function Home({ onSettings }: { onSettings: () => void }) {
 
           <div className="mt-6 space-y-5">
             <Field label="Seu nome">
-              <TextInput
-                autoFocus={!name}
-                value={name}
-                maxLength={32}
-                placeholder="Como os amigos te veem"
-                onChange={(e) => settings.set({ name: e.target.value })}
-              />
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const file = await pickImageFile();
+                    if (file) settings.set({ avatar: await prepareAvatar(file) });
+                  }}
+                  title="Escolher foto de perfil"
+                  className="group relative shrink-0 rounded-full"
+                >
+                  <Avatar name={name || '?'} src={avatar} size={44} />
+                  <span className="absolute inset-0 grid place-items-center rounded-full bg-black/50 text-white opacity-0 transition-opacity group-hover:opacity-100">
+                    <Camera size={16} />
+                  </span>
+                </button>
+                <TextInput
+                  autoFocus={!name}
+                  value={name}
+                  maxLength={32}
+                  placeholder="Como os amigos te veem"
+                  onChange={(e) => settings.set({ name: e.target.value })}
+                />
+              </div>
             </Field>
 
             <Segmented

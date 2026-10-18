@@ -4,7 +4,7 @@ import { call } from '../lib/call';
 import { isWeb, settings, type Settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { audio } from '../lib/audio';
-import { Field, Modal, Segmented, Select, TextInput, Toggle, cx } from './ui';
+import { Field, Modal, Segmented, Select, Slider, TextInput, Toggle, cx } from './ui';
 
 type Tab = 'appearance' | 'voice' | 'video' | 'server';
 
@@ -125,7 +125,7 @@ function ThemePreview({ kind }: { kind: 'light' | 'dark' | 'system' }) {
   );
 }
 
-function useDevices(kind: MediaDeviceKind) {
+export function useDevices(kind: MediaDeviceKind) {
   const [list, setList] = useState<{ value: string; label: string }[]>([]);
   useEffect(() => {
     const load = async () => {
@@ -214,6 +214,10 @@ function Voice() {
       <Field label="Teste do microfone" hint="Fale algo: a barra deve se mexer.">
         <MicMeter />
       </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Slider label="Volume da minha voz" value={s.micGain} onChange={(v) => call.setMicGain(v)} />
+        <Slider label="Volume do que eu ouço" value={s.outputVolume} onChange={(v) => call.setOutputVolume(v)} />
+      </div>
       <div className="space-y-4 rounded-2xl border border-line p-4">
         <Row
           title="Modo alta fidelidade"

@@ -11,7 +11,11 @@ sem cadastro e sem anúncio. A voz e a tela vão **direto de um PC pro outro**
   Modo "Movimento" (jogo/vídeo) ou "Texto" (código/documento nítido). Escolhe
   sozinho o codec que sua placa de vídeo faz em hardware (AV1, VP9 ou H.264).
   No Windows, transmite também o **áudio do computador**.
-- **Chat de texto** na sala, com histórico curto e links clicáveis.
+- **Chat de texto com imagens** (botão, Ctrl+V ou arrastar), histórico curto e
+  links clicáveis.
+- **Perfil**: foto e nome editáveis a qualquer momento (clique no seu avatar).
+- **Volumes**: da sua voz (com limitador que evita estourar/distorcer) e de tudo
+  que você ouve, direto no painel de baixo (botão de ajustes ao lado do mudo).
 - **Tema claro, escuro ou do sistema.**
 - **Apps para Windows, macOS e Linux**, e uma versão web (entra pelo navegador
   sem instalar).

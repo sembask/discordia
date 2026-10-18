@@ -16,6 +16,31 @@ const SPEAK_THRESHOLD = 0.018; // RMS
 const SPEAK_HOLD_MS = 320;
 const METER_MS = 60;
 
+/** Até quanto acima do teto o limitador aceita (o volume máximo é 200%). */
+const LIMITER_HEADROOM = 2;
+/** Abaixo disso o som passa intacto; acima, os picos são arredondados. */
+const LIMITER_KNEE = 0.75;
+/** Teto de saída, com margem pra sobreoscilação do filtro (nunca encosta em 1). */
+const LIMITER_CEILING = 0.93;
+
+let cachedCurve: Float32Array<ArrayBuffer> | null = null;
+
+/** Curva do limitador: linear até o joelho, depois encosta suave no teto (sem estourar). */
+function limiterCurve(): Float32Array<ArrayBuffer> {
+  if (cachedCurve) return cachedCurve;
+  const n = 4096;
+  const curve = new Float32Array(n);
+  const span = LIMITER_CEILING - LIMITER_KNEE;
+  for (let i = 0; i < n; i++) {
+    const x = ((i / (n - 1)) * 2 - 1) * LIMITER_HEADROOM; // amplitude real
+    const m = Math.abs(x);
+    const y = m <= LIMITER_KNEE ? m : LIMITER_KNEE + span * Math.tanh((m - LIMITER_KNEE) / span);
+    curve[i] = Math.sign(x) * y;
+  }
+  cachedCurve = curve;
+  return curve;
+}
+
 type SpeakingListener = (speaking: Record<string, boolean>) => void;
 
 class AudioEngine {
@@ -31,11 +56,14 @@ class AudioEngine {
   private buf = new Float32Array(1024);
   private sinkId = '';
   private localLevel = 0;
+  private outputVolume = 1;
+  private deafened = false;
 
   private ensure(): AudioContext {
     if (!this.ctx) {
       this.ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
       this.master = this.ctx.createGain();
+      this.master.gain.value = this.deafened ? 0 : this.outputVolume;
       this.master.connect(this.ctx.destination);
       if (this.sinkId) void this.applySink();
       this.timer = window.setInterval(() => this.meter(), METER_MS);
@@ -102,8 +130,52 @@ class AudioEngine {
   }
 
   setDeafened(deafened: boolean) {
+    this.deafened = deafened;
+    this.applyMaster();
+  }
+
+  /** Volume geral do que eu ouço (0..2). */
+  setOutputVolume(volume: number) {
+    this.outputVolume = volume;
+    if (this.ctx) this.applyMaster();
+  }
+
+  private applyMaster() {
     this.ensure();
-    this.master!.gain.setTargetAtTime(deafened ? 0 : 1, this.ctx!.currentTime, 0.02);
+    this.master!.gain.setTargetAtTime(this.deafened ? 0 : this.outputVolume, this.ctx!.currentTime, 0.02);
+  }
+
+  /**
+   * Passa o microfone por um ganho antes de mandar (o "volume da minha voz").
+   * Devolve a faixa já processada, que é a que vai pros amigos.
+   */
+  micPipeline(raw: MediaStreamTrack, gain: number, stereo: boolean) {
+    const ctx = this.ensure();
+    const source = ctx.createMediaStreamSource(new MediaStream([raw]));
+    // O ganho entra pela metade e o limitador "desfaz" isso: assim ele enxerga
+    // até 2× o teto e arredonda os picos em vez de estourar (distorcer).
+    const node = ctx.createGain();
+    node.gain.value = gain / LIMITER_HEADROOM;
+    const limiter = ctx.createWaveShaper();
+    limiter.curve = limiterCurve();
+    limiter.oversample = '2x';
+    const dest = ctx.createMediaStreamDestination();
+    dest.channelCount = stereo ? 2 : 1;
+    dest.channelCountMode = 'explicit';
+    source.connect(node);
+    node.connect(limiter);
+    limiter.connect(dest);
+    const track = dest.stream.getAudioTracks()[0];
+    return {
+      track,
+      setGain: (g: number) => node.gain.setTargetAtTime(g / LIMITER_HEADROOM, ctx.currentTime, 0.03),
+      dispose: () => {
+        source.disconnect();
+        node.disconnect();
+        limiter.disconnect();
+        track.stop();
+      },
+    };
   }
 
   async setOutputDevice(deviceId: string) {

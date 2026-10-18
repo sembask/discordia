@@ -77,12 +77,26 @@ test('sala: entrar, sinalizar, estado, chat e sair', async () => {
     assert.equal(ca.msg.text, 'oi!');
     assert.equal(cb.msg.name, 'Bia');
 
+    // Imagem no chat e foto de perfil.
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    a.send({ t: 'chat', text: '', image: png });
+    const img = await b.next('chat');
+    assert.equal(img.msg.image, png);
+    await a.next('chat');
+    a.send({ t: 'chat', image: 'javascript:alert(1)' });
+    assert.equal((await a.next('error')).code, 'bad-image');
+    b.send({ t: 'profile', name: 'Bia Nova', avatar: png });
+    const prof = await a.next('profile');
+    assert.equal(prof.name, 'Bia Nova');
+    assert.equal(prof.avatar, png);
+
     // Quem entra depois recebe o histórico.
     const c = client(url);
     await c.open();
     c.send({ t: 'join', room: 'teste', name: 'Caio' });
     const wc = await c.next('welcome');
-    assert.equal(wc.history.length, 1);
+    assert.equal(wc.history.length, 2);
+    assert.equal(wc.peers.find((p) => p.name === 'Bia Nova').avatar, png);
     assert.equal(wc.peers.length, 2);
 
     b.ws.close();

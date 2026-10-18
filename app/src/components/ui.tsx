@@ -205,15 +205,31 @@ function hue(name: string) {
 
 export function Avatar({
   name,
+  src,
   size = 36,
   speaking,
   className,
 }: {
   name: string;
+  /** Foto de perfil; sem ela, mostra as iniciais num degradê. */
+  src?: string | null;
   size?: number;
   speaking?: boolean;
   className?: string;
 }) {
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        draggable={false}
+        width={size}
+        height={size}
+        className={cx('shrink-0 rounded-full object-cover transition-shadow', speaking && 'speaking', className)}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   const h = hue(name);
   const initials = name
     .split(/\s+/)
@@ -233,5 +249,55 @@ export function Avatar({
     >
       {initials || '?'}
     </div>
+  );
+}
+
+/** Painel flutuante que fecha ao clicar fora ou apertar Esc. */
+export function Popover({ onClose, className, children }: { onClose: () => void; className?: string; children: ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest('[data-popover]')) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    // Adiado: o clique que abriu o popover não pode fechá-lo.
+    const id = setTimeout(() => window.addEventListener('mousedown', onDown));
+    return () => {
+      clearTimeout(id);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [onClose]);
+  return (
+    <div data-popover className={cx('animate-pop z-40 rounded-2xl border border-line bg-elev p-4 shadow-soft', className)}>
+      {children}
+    </div>
+  );
+}
+
+/** Controle deslizante com rótulo e porcentagem. */
+export function Slider({
+  label,
+  icon,
+  value,
+  max = 2,
+  onChange,
+}: {
+  label: string;
+  icon?: ReactNode;
+  value: number;
+  max?: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 flex items-center justify-between text-xs font-semibold text-muted">
+        <span className="flex items-center gap-1.5">
+          {icon} {label}
+        </span>
+        <span className="tabular-nums">{Math.round(value * 100)}%</span>
+      </span>
+      <input type="range" min={0} max={max} step={0.01} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full" />
+    </label>
   );
 }

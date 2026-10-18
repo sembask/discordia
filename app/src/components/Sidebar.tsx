@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Check, Copy, Link2, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, PhoneOff, Signal, Volume2, WifiOff } from 'lucide-react';
+import { Check, Copy, Link2, SlidersHorizontal, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, Signal, Volume2, WifiOff } from 'lucide-react';
 import { call, type RemotePeer } from '../lib/call';
 import { inviteLink, settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { Avatar, IconButton, cx } from './ui';
+import { ProfilePopover, VoicePopover } from './UserPopovers';
 
-export function Sidebar() {
+export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const room = useStore(call.store, (s) => s.room);
   const status = useStore(call.store, (s) => s.status);
   const peers = useStore(call.store, (s) => s.peers);
@@ -14,6 +15,7 @@ export function Sidebar() {
   const deafened = useStore(call.store, (s) => s.deafened);
   const localScreen = useStore(call.store, (s) => s.localScreen);
   const name = useStore(settings, (s) => s.name);
+  const avatar = useStore(settings, (s) => s.avatar);
   const [copied, setCopied] = useState<'link' | 'code' | null>(null);
   const list = Object.values(peers).sort((a, b) => a.name.localeCompare(b.name));
 
@@ -26,7 +28,7 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-panel">
+    <aside className="flex w-72 shrink-0 flex-col border-r border-line bg-panel">
       <div className="border-b border-line p-4">
         <div className="text-xs font-semibold tracking-wide text-muted uppercase">Sala</div>
         <button
@@ -55,7 +57,7 @@ export function Sidebar() {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         <div className="px-2 pt-2 pb-1 text-xs font-semibold tracking-wide text-muted uppercase">Na sala — {list.length + 1}</div>
-        <MemberRow name={name || 'Você'} you speaking={!!speaking.self && !muted} muted={muted} deafened={deafened} sharing={!!localScreen} />
+        <MemberRow name={name || 'Você'} avatar={avatar} you speaking={!!speaking.self && !muted} muted={muted} deafened={deafened} sharing={!!localScreen} />
         {list.map((p) => (
           <RemoteRow key={p.id} peer={p} speaking={!!speaking[p.id] && !p.state.muted} />
         ))}
@@ -66,13 +68,14 @@ export function Sidebar() {
         )}
       </div>
 
-      <UserPanel />
+      <UserPanel onSettings={onSettings} />
     </aside>
   );
 }
 
 function MemberRow({
   name,
+  avatar,
   you,
   speaking,
   muted,
@@ -83,6 +86,7 @@ function MemberRow({
   open,
 }: {
   name: string;
+  avatar?: string | null;
   you?: boolean;
   speaking: boolean;
   muted: boolean;
@@ -102,7 +106,7 @@ function MemberRow({
         open && 'bg-hover',
       )}
     >
-      <Avatar name={name} size={32} speaking={speaking} />
+      <Avatar name={name} src={avatar} size={32} speaking={speaking} />
       <span className="min-w-0 flex-1">
         <span className={cx('block truncate text-sm font-semibold', weak && 'opacity-60')}>
           {name}
@@ -126,6 +130,7 @@ function RemoteRow({ peer, speaking }: { peer: RemotePeer; speaking: boolean }) 
     <div>
       <MemberRow
         name={peer.name}
+        avatar={peer.avatar}
         speaking={speaking}
         muted={peer.state.muted}
         deafened={peer.state.deafened}
@@ -157,29 +162,44 @@ function RemoteRow({ peer, speaking }: { peer: RemotePeer; speaking: boolean }) 
   );
 }
 
-function UserPanel() {
+function UserPanel({ onSettings }: { onSettings: () => void }) {
   const muted = useStore(call.store, (s) => s.muted);
   const deafened = useStore(call.store, (s) => s.deafened);
   const micError = useStore(call.store, (s) => s.micError);
   const speaking = useStore(call.store, (s) => !!s.speaking.self);
   const name = useStore(settings, (s) => s.name);
+  const avatar = useStore(settings, (s) => s.avatar);
+  const [open, setOpen] = useState<'voice' | 'profile' | null>(null);
   return (
-    <div className="border-t border-line bg-panel-2/60 p-2">
+    <div className="relative border-t border-line bg-panel-2/60 p-2">
       {micError && <div className="mb-2 rounded-lg bg-danger-soft px-3 py-2 text-xs font-medium text-danger">{micError}</div>}
-      <div className="flex items-center gap-1.5">
-        <Avatar name={name || 'Você'} size={32} speaking={speaking && !muted} />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{name}</div>
-          <div className="truncate text-xs text-muted">{deafened ? 'Ensurdecido' : muted ? 'Mutado' : 'Mic aberto'}</div>
-        </div>
+      {open === 'voice' && <VoicePopover onClose={() => setOpen(null)} onMore={onSettings} />}
+      {open === 'profile' && <ProfilePopover onClose={() => setOpen(null)} />}
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => setOpen(open === 'profile' ? null : 'profile')}
+          title="Editar nome e foto"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl p-1 text-left transition-colors hover:bg-hover"
+        >
+          <Avatar name={name || 'Você'} src={avatar} size={32} speaking={speaking && !muted} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">{name}</span>
+            <span className="block truncate text-xs text-muted">{deafened ? 'Ensurdecido' : muted ? 'Mutado' : 'Mic aberto'}</span>
+          </span>
+        </button>
         <IconButton label={muted ? 'Desmutar' : 'Mutar'} danger={muted} onClick={() => call.toggleMute()} className="size-8">
           {muted ? <MicOff size={16} /> : <Mic size={16} />}
         </IconButton>
         <IconButton label={deafened ? 'Voltar a ouvir' : 'Ensurdecer'} danger={deafened} onClick={() => call.toggleDeafen()} className="size-8">
           {deafened ? <HeadphoneOff size={16} /> : <Headphones size={16} />}
         </IconButton>
-        <IconButton label="Sair da sala" onClick={() => call.leave()} className="size-8 hover:!bg-danger hover:!text-white">
-          <PhoneOff size={16} />
+        <IconButton
+          label="Configurações de voz"
+          active={open === 'voice'}
+          onClick={() => setOpen(open === 'voice' ? null : 'voice')}
+          className="size-8"
+        >
+          <SlidersHorizontal size={16} />
         </IconButton>
       </div>
     </div>

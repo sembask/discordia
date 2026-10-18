@@ -22,7 +22,7 @@ export function App() {
         onSettings={() => setSettingsOpen(true)}
         center={inRoom && room ? <span className="truncate font-medium">#{room}</span> : null}
       />
-      {inRoom ? <Room /> : <Home onSettings={() => setSettingsOpen(true)} />}
+      {inRoom ? <Room onSettings={() => setSettingsOpen(true)} /> : <Home onSettings={() => setSettingsOpen(true)} />}
       {status === 'connecting' && !room && <ConnectingOverlay />}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
@@ -31,7 +31,7 @@ export function App() {
 
 const wide = () => window.matchMedia('(min-width: 1024px)').matches;
 
-function Room() {
+function Room({ onSettings }: { onSettings: () => void }) {
   const [chatOpen, setChatOpen] = useState(wide);
   const [people, setPeople] = useState(false);
   const [picker, setPicker] = useState(false);
@@ -58,7 +58,7 @@ function Room() {
     <div className="relative flex min-h-0 flex-1">
       {/* Tela larga: barra lateral fixa. Celular: gaveta que abre por cima. */}
       <div className={people ? 'absolute inset-0 z-30 flex lg:static lg:z-auto' : 'hidden lg:flex'}>
-        <Sidebar />
+        <Sidebar onSettings={onSettings} />
         {people && <div className="flex-1 bg-black/40 lg:hidden" onClick={() => setPeople(false)} />}
       </div>
       <Stage

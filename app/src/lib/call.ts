@@ -22,6 +22,7 @@ export interface PeerMediaState {
 export interface RemotePeer {
   id: string;
   name: string;
+  avatar: string | null;
   state: PeerMediaState;
   connection: RTCPeerConnectionState | 'new';
   screenStream: MediaStream | null;
@@ -32,6 +33,10 @@ export interface ChatMessage {
   from: string;
   name: string;
   text: string;
+  /** Imagem anexada (data URL) ou null. */
+  image?: string | null;
+  /** A imagem saiu do histórico do servidor (só as mais recentes ficam). */
+  expired?: boolean;
   ts: number;
 }
 
@@ -190,6 +195,8 @@ class Call {
   private retry = 0;
   private retryTimer: number | null = null;
   private micStream: MediaStream | null = null;
+  /** Ganho da minha voz entre o microfone e o envio. */
+  private micChain: ReturnType<typeof audio.micPipeline> | null = null;
   /** Stream "contêiner" do microfone: id fixo, a faixa dentro troca à vontade. */
   private micOut = new MediaStream();
   private screen: MediaStream | null = null;
@@ -212,6 +219,7 @@ class Call {
     this.store.set({ ...initialState(), status: 'connecting', muted: this.store.get().muted });
     await this.acquireMic();
     void audio.setOutputDevice(settings.get().outputDeviceId);
+    audio.setOutputVolume(settings.get().outputVolume);
     this.connect();
   }
 
@@ -229,6 +237,8 @@ class Call {
     this.pingTimer = null;
     this.closePeers();
     this.stopScreen(false);
+    this.micChain?.dispose();
+    this.micChain = null;
     for (const t of this.micStream?.getTracks() ?? []) t.stop();
     this.micStream = null;
     for (const t of this.micOut.getTracks()) this.micOut.removeTrack(t);
@@ -251,7 +261,14 @@ class Call {
     this.ws = ws;
 
     ws.onopen = () => {
-      this.send({ t: 'join', room: target.room, name: target.name, state: this.localState(), protocol: PROTOCOL });
+      this.send({
+        t: 'join',
+        room: target.room,
+        name: target.name,
+        avatar: settings.get().avatar,
+        state: this.localState(),
+        protocol: PROTOCOL,
+      });
     };
     ws.onmessage = (ev) => {
       try {
@@ -289,8 +306,8 @@ class Call {
         this.retry = 0;
         this.iceServers = msg.iceServers ?? [];
         const peers: Record<string, RemotePeer> = {};
-        for (const p of msg.peers as { id: string; name: string; state: PeerMediaState }[]) {
-          peers[p.id] = { id: p.id, name: p.name, state: p.state, connection: 'new', screenStream: null };
+        for (const p of msg.peers as { id: string; name: string; avatar: string | null; state: PeerMediaState }[]) {
+          peers[p.id] = { id: p.id, name: p.name, avatar: p.avatar ?? null, state: p.state, connection: 'new', screenStream: null };
         }
         this.store.set({ status: 'connected', error: null, room: msg.room, selfId: msg.id, peers, messages: msg.history ?? [] });
         for (const id of Object.keys(peers)) this.ensurePeer(id);
@@ -298,9 +315,12 @@ class Call {
         return;
       }
       case 'peer-joined': {
-        const p = msg.peer as { id: string; name: string; state: PeerMediaState };
+        const p = msg.peer as { id: string; name: string; avatar: string | null; state: PeerMediaState };
         this.store.set((s) => ({
-          peers: { ...s.peers, [p.id]: { id: p.id, name: p.name, state: p.state, connection: 'new', screenStream: null } },
+          peers: {
+            ...s.peers,
+            [p.id]: { id: p.id, name: p.name, avatar: p.avatar ?? null, state: p.state, connection: 'new', screenStream: null },
+          },
         }));
         this.applyVolume(p.id);
         // Quem acabou de entrar é quem inicia a conexão (evita as duas ofertas
@@ -311,6 +331,12 @@ class Call {
       case 'peer-left': {
         this.dropPeer(msg.id);
         if (settings.get().sounds) audio.chime('leave');
+        return;
+      }
+      case 'profile': {
+        const peer = this.store.get().peers[msg.id];
+        if (!peer) return;
+        this.store.set((s) => ({ peers: { ...s.peers, [msg.id]: { ...peer, name: msg.name, avatar: msg.avatar ?? null } } }));
         return;
       }
       case 'state': {
@@ -627,12 +653,18 @@ class Call {
         });
       }
     }
+    this.micChain?.dispose();
+    this.micChain = null;
     for (const t of this.micStream?.getTracks() ?? []) t.stop();
     this.micStream = stream;
     for (const t of this.micOut.getTracks()) this.micOut.removeTrack(t);
-    const track = stream?.getAudioTracks()[0] ?? null;
-    if (track) {
-      track.contentHint = settings.get().hifi ? 'music' : 'speech';
+    const raw = stream?.getAudioTracks()[0] ?? null;
+    let track: MediaStreamTrack | null = null;
+    if (raw) {
+      const s = settings.get();
+      this.micChain = audio.micPipeline(raw, s.micGain, s.hifi);
+      track = this.micChain.track;
+      track.contentHint = s.hifi ? 'music' : 'speech';
       track.enabled = !this.store.get().muted;
       this.micOut.addTrack(track);
     }
@@ -744,9 +776,27 @@ class Call {
 
   // ---------------------------------------------------------------- chat
 
-  sendChat(text: string) {
+  sendChat(text: string, image: string | null = null) {
     const clean = text.trim();
-    if (clean) this.send({ t: 'chat', text: clean });
+    if (clean || image) this.send({ t: 'chat', text: clean, image });
+  }
+
+  // ---------------------------------------------------------------- perfil e volumes
+
+  /** Troca nome e/ou foto no meio da sala; os amigos veem na hora. */
+  updateProfile(name: string, avatar: string | null) {
+    if (this.target) this.target.name = name;
+    this.send({ t: 'profile', name, avatar });
+  }
+
+  setMicGain(gain: number) {
+    settings.set({ micGain: gain });
+    this.micChain?.setGain(gain);
+  }
+
+  setOutputVolume(volume: number) {
+    settings.set({ outputVolume: volume });
+    audio.setOutputVolume(volume);
   }
 
   setChatVisible(visible: boolean) {

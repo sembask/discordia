@@ -180,8 +180,15 @@ function VoiceGrid({ onShare }: { onShare: () => void }) {
   const speaking = useStore(call.store, (s) => s.speaking);
   const muted = useStore(call.store, (s) => s.muted);
   const name = useStore(settings, (s) => s.name);
-  const people = [{ id: 'self', name: name || 'Você', speaking: !!speaking.self && !muted, muted }].concat(
-    Object.values(peers).map((p) => ({ id: p.id, name: p.name, speaking: !!speaking[p.id] && !p.state.muted, muted: p.state.muted })),
+  const avatar = useStore(settings, (s) => s.avatar);
+  const people = [{ id: 'self', name: name || 'Você', avatar, speaking: !!speaking.self && !muted, muted }].concat(
+    Object.values(peers).map((p) => ({
+      id: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      speaking: !!speaking[p.id] && !p.state.muted,
+      muted: p.state.muted,
+    })),
   );
   return (
     <div className="bg-grid flex flex-1 flex-col items-center justify-center gap-10 overflow-y-auto rounded-2xl border border-line bg-panel/40 p-4 sm:p-8">
@@ -189,7 +196,7 @@ function VoiceGrid({ onShare }: { onShare: () => void }) {
         {people.map((p) => (
           <div key={p.id} className="animate-pop flex w-28 flex-col items-center gap-2.5">
             <div className="relative">
-              <Avatar name={p.name} size={84} speaking={p.speaking} />
+              <Avatar name={p.name} src={p.avatar} size={84} speaking={p.speaking} />
               {p.muted && (
                 <span className="absolute -right-1 -bottom-1 grid size-7 place-items-center rounded-full border-2 border-stage bg-danger text-white">
                   <MicOff size={13} />

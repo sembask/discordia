@@ -19,6 +19,12 @@ export interface Settings {
   userVolumes: Record<string, number>;
   recentRooms: string[];
   sounds: boolean;
+  /** Foto de perfil (data URL 256×256) ou null pras iniciais. */
+  avatar: string | null;
+  /** Volume da minha voz, 0..2. */
+  micGain: number;
+  /** Volume de tudo que eu ouço, 0..2. */
+  outputVolume: number;
 }
 
 const KEY = 'discordia.settings';
@@ -74,6 +80,9 @@ const DEFAULTS: Settings = {
   userVolumes: {},
   recentRooms: [],
   sounds: true,
+  avatar: null,
+  micGain: 1,
+  outputVolume: 1,
 };
 
 function load(): Settings {

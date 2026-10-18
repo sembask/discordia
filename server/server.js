@@ -22,11 +22,19 @@ const MAX_NAME = 32;
 const MAX_ROOM = 32;
 const MAX_CHAT = 2000;
 const HISTORY = 100;
-const MAX_MESSAGE_BYTES = 256 * 1024; // SDP com muitos codecs passa de 10 KB; folga larga.
+// Cabe uma imagem do chat (já comprimida pelo app) com folga.
+const MAX_MESSAGE_BYTES = 5 * 1024 * 1024;
+const MAX_IMAGE_CHARS = 4_000_000; // ~3 MB de imagem em base64
+const MAX_AVATAR_CHARS = 200_000; // ~150 KB (o app manda 256×256)
+/** Só as N imagens mais recentes ficam no histórico (memória e banda de quem entra). */
+const HISTORY_IMAGES = 20;
+const IMAGE_RE = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
 const HEARTBEAT_MS = 15_000;
 // Balde de fichas por conexão: rajada curta passa, enxurrada não.
 const RATE_BURST = 400;
 const RATE_PER_SEC = 120;
+const IMAGE_BURST = 4;
+const IMAGE_PER_SEC = 0.25;
 const CHAT_BURST = 8;
 const CHAT_PER_SEC = 1;
 
@@ -103,6 +111,10 @@ function take(b) {
   return true;
 }
 
+export function sanitizeImage(raw, maxChars) {
+  return typeof raw === 'string' && raw.length <= maxChars && IMAGE_RE.test(raw) ? raw : null;
+}
+
 function sanitizeState(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   return {
@@ -111,6 +123,16 @@ function sanitizeState(raw) {
     screen: typeof s.screen === 'string' && s.screen.length <= 128 ? s.screen : null,
     screenAudio: !!s.screenAudio,
   };
+}
+
+/** Mantém só as imagens mais recentes; as antigas viram "imagem expirada". */
+function trimHistoryImages(history) {
+  let seen = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (!history[i].image) continue;
+    seen += 1;
+    if (seen > HISTORY_IMAGES) history[i] = { ...history[i], image: null, expired: true };
+  }
 }
 
 function serveStatic(webDir, req, res) {
@@ -175,7 +197,7 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
   }
 
   function publicPeer(p) {
-    return { id: p.id, name: p.name, state: p.state };
+    return { id: p.id, name: p.name, avatar: p.avatar, state: p.state };
   }
 
   function leaveRoom(peer) {
@@ -193,11 +215,13 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
       id: crypto.randomUUID(),
       ws,
       name: 'Anônimo',
+      avatar: null,
       room: null,
       state: sanitizeState(null),
       alive: true,
       rate: bucket(RATE_BURST, RATE_PER_SEC),
       chatRate: bucket(CHAT_BURST, CHAT_PER_SEC),
+      imageRate: bucket(IMAGE_BURST, IMAGE_PER_SEC),
     };
 
     ws.on('pong', () => {
@@ -232,6 +256,7 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
             rooms.set(roomId, room);
           }
           peer.name = normalizeName(msg.name);
+          peer.avatar = sanitizeImage(msg.avatar, MAX_AVATAR_CHARS);
           peer.state = sanitizeState(msg.state);
           send(peer, {
             t: 'welcome',
@@ -265,15 +290,28 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
           const room = peer.room;
           if (!room) return;
           const text = String(msg.text ?? '').trim().slice(0, MAX_CHAT);
-          if (!text) return;
-          if (!take(peer.chatRate)) {
+          const image = msg.image == null ? null : sanitizeImage(msg.image, MAX_IMAGE_CHARS);
+          if (msg.image != null && !image) {
+            send(peer, { t: 'error', code: 'bad-image', message: 'Imagem inválida ou grande demais.' });
+            return;
+          }
+          if (!text && !image) return;
+          if (!take(peer.chatRate) || (image && !take(peer.imageRate))) {
             send(peer, { t: 'error', code: 'slow-down', message: 'Calma! Você está mandando mensagens rápido demais.' });
             return;
           }
-          const entry = { id: crypto.randomUUID(), from: peer.id, name: peer.name, text, ts: Date.now() };
+          const entry = { id: crypto.randomUUID(), from: peer.id, name: peer.name, text, image, ts: Date.now() };
           room.history.push(entry);
           if (room.history.length > HISTORY) room.history.shift();
+          trimHistoryImages(room.history);
           broadcast(room, { t: 'chat', msg: entry });
+          return;
+        }
+        case 'profile': {
+          if (!peer.room) return;
+          peer.name = normalizeName(msg.name ?? peer.name);
+          if ('avatar' in msg) peer.avatar = sanitizeImage(msg.avatar, MAX_AVATAR_CHARS);
+          broadcast(peer.room, { t: 'profile', id: peer.id, name: peer.name, avatar: peer.avatar }, peer.id);
           return;
         }
         case 'leave':
