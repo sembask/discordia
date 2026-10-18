@@ -8,6 +8,9 @@ import {
   MicOff,
   MonitorOff,
   MonitorUp,
+  Maximize,
+  Minimize2,
+  Music2,
   PhoneOff,
   Users,
   Volume2,
@@ -17,6 +20,9 @@ import { call, type VideoStats } from '../lib/call';
 import { settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { Avatar, IconButton, cx } from './ui';
+import { music, titleOf } from '../lib/music';
+import type { PanelTab } from './RightPanel';
+import { MusicVolume, SeekBar, TransportControls } from './MusicPanel';
 
 interface Share {
   key: string;
@@ -45,25 +51,48 @@ function useShares(): Share[] {
 export const canShareScreen = !!navigator.mediaDevices?.getDisplayMedia;
 
 export function Stage({
-  chatOpen,
-  onToggleChat,
+  panel,
+  onPanel,
   onShare,
   onPeople,
 }: {
-  chatOpen: boolean;
-  onToggleChat: () => void;
+  panel: PanelTab | null;
+  onPanel: (tab: PanelTab) => void;
   onShare: () => void;
   onPeople: () => void;
 }) {
   const shares = useShares();
   const [focus, setFocus] = useState<string | null>(null);
-  const focused = shares.find((s) => s.key === focus) ?? shares.find((s) => s.peerId !== null) ?? shares[0] ?? null;
+  const musicOn = useStore(music.store, (s) => !!s.state && s.state.index >= 0 && !s.state.ended);
+  const musicView = useStore(music.store, (s) => s.view);
+  const watching = musicOn && musicView === 'stage';
+  const focused = watching ? null : (shares.find((s) => s.key === focus) ?? shares.find((s) => s.peerId !== null) ?? shares[0] ?? null);
   const others = shares.filter((s) => s !== focused);
 
   return (
     <main className="relative flex min-w-0 flex-1 flex-col bg-stage">
       <div className="flex min-h-0 flex-1 flex-col gap-3 p-2 sm:p-4">
-        {focused ? (
+        {watching ? (
+          <>
+            <MusicStage onOpenPanel={() => onPanel('music')} />
+            {others.length > 0 && (
+              <div className="flex h-36 shrink-0 gap-3 overflow-x-auto">
+                {others.map((s) => (
+                  <button
+                    key={s.key}
+                    onClick={() => {
+                      music.setView('mini');
+                      setFocus(s.key);
+                    }}
+                    className="aspect-video h-full shrink-0"
+                  >
+                    <ScreenTile share={s} />
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : focused ? (
           <>
             <ScreenTile share={focused} large />
             {others.length > 0 && (
@@ -80,7 +109,8 @@ export function Stage({
           <VoiceGrid onShare={onShare} />
         )}
       </div>
-      <ControlBar chatOpen={chatOpen} onToggleChat={onToggleChat} onShare={onShare} onPeople={onPeople} />
+      {musicOn && !watching && <MusicDock onOpenPanel={() => onPanel('music')} />}
+      <ControlBar panel={panel} onPanel={onPanel} onShare={onShare} onPeople={onPeople} />
     </main>
   );
 }
@@ -221,16 +251,18 @@ function VoiceGrid({ onShare }: { onShare: () => void }) {
 }
 
 function ControlBar({
-  chatOpen,
-  onToggleChat,
+  panel,
+  onPanel,
   onShare,
   onPeople,
 }: {
-  chatOpen: boolean;
-  onToggleChat: () => void;
+  panel: PanelTab | null;
+  onPanel: (tab: PanelTab) => void;
   onShare: () => void;
   onPeople: () => void;
 }) {
+  const chatOpen = panel === 'chat';
+  const musicPlaying = useStore(music.store, (s) => !!s.state?.playing && !s.state.ended);
   const muted = useStore(call.store, (s) => s.muted);
   const deafened = useStore(call.store, (s) => s.deafened);
   const sharing = useStore(call.store, (s) => !!s.localScreen);
@@ -256,7 +288,7 @@ function ControlBar({
           {sharing ? <MonitorOff size={19} /> : <MonitorUp size={19} />}
         </IconButton>}
         <div className="relative">
-          <IconButton label="Chat" active={chatOpen} onClick={onToggleChat} className="size-11">
+          <IconButton label="Chat" active={chatOpen} onClick={() => onPanel('chat')} className="size-11">
             <MessageSquare size={19} />
           </IconButton>
           {unread > 0 && !chatOpen && (
@@ -264,6 +296,12 @@ function ControlBar({
               {unread > 9 ? '9+' : unread}
             </span>
           )}
+        </div>
+        <div className="relative">
+          <IconButton label="Música" active={panel === 'music'} onClick={() => onPanel('music')} className="size-11">
+            <Music2 size={19} />
+          </IconButton>
+          {musicPlaying && panel !== 'music' && <span className="absolute top-1.5 right-1.5 size-2 animate-pulse rounded-full bg-success" />}
         </div>
         <div className="mx-1 h-7 w-px bg-line" />
         <button
@@ -274,6 +312,81 @@ function ControlBar({
           <PhoneOff size={18} /> <span className="hidden sm:inline">Sair</span>
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Aviso quando o navegador barrou o som automático do player. */
+function BlockedHint() {
+  const blocked = useStore(music.store, (s) => s.blocked);
+  if (!blocked) return null;
+  return (
+    <div className="rounded-lg bg-warning/20 px-2.5 py-1.5 text-[11px] font-medium text-warning">
+      O navegador pausou a música: clique uma vez no vídeo pra liberar o som.
+    </div>
+  );
+}
+
+function useCurrentTitle() {
+  return useStore(music.store, (s) => {
+    const st = s.state;
+    const cur = st && st.index >= 0 ? st.queue[st.index] : null;
+    return cur ? titleOf(cur) : '';
+  });
+}
+
+/** Mini-player no canto do palco (o vídeo fica visível, como o YouTube exige). */
+function MusicDock({ onOpenPanel }: { onOpenPanel: () => void }) {
+  const title = useCurrentTitle();
+  return (
+    <div className="animate-pop absolute right-3 bottom-[84px] z-10 w-[min(356px,calc(100%-1.5rem))] overflow-hidden rounded-2xl border border-line bg-panel shadow-soft">
+      <div data-music-slot className="aspect-video w-full bg-black" />
+      <div className="space-y-1.5 p-2.5">
+        <div className="flex items-center gap-2">
+          <button onClick={onOpenPanel} className="min-w-0 flex-1 truncate text-left text-xs font-semibold hover:text-accent" title="Abrir a fila">
+            {title}
+          </button>
+          <button onClick={() => music.setView('stage')} title="Assistir junto (vídeo grande)" className="text-muted hover:text-fg">
+            <Maximize size={15} />
+          </button>
+        </div>
+        <SeekBar compact />
+        <div className="flex items-center gap-2">
+          <TransportControls compact />
+          <div className="min-w-0 flex-1">
+            <MusicVolume />
+          </div>
+        </div>
+        <BlockedHint />
+      </div>
+    </div>
+  );
+}
+
+/** "Assistir junto": o vídeo da sala ocupa o palco. */
+function MusicStage({ onOpenPanel }: { onOpenPanel: () => void }) {
+  const title = useCurrentTitle();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <div className="flex items-center gap-3 px-1">
+        <Music2 size={16} className="shrink-0 text-accent" />
+        <button onClick={onOpenPanel} className="min-w-0 flex-1 truncate text-left text-sm font-semibold hover:text-accent">
+          {title}
+        </button>
+        <div className="hidden w-64 sm:block">
+          <SeekBar compact />
+        </div>
+        <TransportControls compact />
+        <button
+          onClick={() => music.setView('mini')}
+          title="Voltar pro mini-player"
+          className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold text-muted hover:bg-hover hover:text-fg"
+        >
+          <Minimize2 size={14} /> Mini
+        </button>
+      </div>
+      <div data-music-slot className="min-h-0 flex-1 rounded-2xl bg-black" />
+      <BlockedHint />
     </div>
   );
 }

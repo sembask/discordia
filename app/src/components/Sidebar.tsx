@@ -5,6 +5,17 @@ import { inviteLink, settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { Avatar, IconButton, cx } from './ui';
 import { ProfilePopover, VoicePopover } from './UserPopovers';
+import { music, titleOf } from '../lib/music';
+
+function NowPlayingLine() {
+  const line = useStore(music.store, (s) => {
+    const st = s.state;
+    const cur = st && st.index >= 0 && !st.ended ? st.queue[st.index] : null;
+    return cur ? `${st!.playing ? '♪' : '❚❚'} ${titleOf(cur)}` : '';
+  });
+  if (!line) return null;
+  return <div className="mt-1.5 truncate text-xs font-medium text-accent">{line}</div>;
+}
 
 export function Sidebar({ onSettings }: { onSettings: () => void }) {
   const room = useStore(call.store, (s) => s.room);
@@ -53,6 +64,7 @@ export function Sidebar({ onSettings }: { onSettings: () => void }) {
           {status === 'connected' ? <Signal size={13} /> : <WifiOff size={13} />}
           {status === 'connected' ? 'Voz conectada' : status === 'reconnecting' ? 'Reconectando…' : 'Conectando…'}
         </div>
+        <NowPlayingLine />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2">

@@ -6,7 +6,8 @@ import { TitleBar } from './components/TitleBar';
 import { Home } from './components/Home';
 import { Sidebar } from './components/Sidebar';
 import { Stage } from './components/Stage';
-import { Chat } from './components/Chat';
+import { RightPanel, type PanelTab } from './components/RightPanel';
+import { MusicPlayerHost } from './components/MusicPlayerHost';
 import { ScreenPicker } from './components/ScreenPicker';
 import { SettingsModal } from './components/SettingsModal';
 
@@ -32,7 +33,9 @@ export function App() {
 const wide = () => window.matchMedia('(min-width: 1024px)').matches;
 
 function Room({ onSettings }: { onSettings: () => void }) {
-  const [chatOpen, setChatOpen] = useState(wide);
+  const [panel, setPanel] = useState<PanelTab | null>(() => (wide() ? 'chat' : null));
+  // Clicar na aba que já está aberta fecha o painel.
+  const togglePanel = (tab: PanelTab) => setPanel((cur) => (cur === tab ? null : tab));
   const [people, setPeople] = useState(false);
   const [picker, setPicker] = useState(false);
   const status = useStore(call.store, (s) => s.status);
@@ -61,13 +64,9 @@ function Room({ onSettings }: { onSettings: () => void }) {
         <Sidebar onSettings={onSettings} />
         {people && <div className="flex-1 bg-black/40 lg:hidden" onClick={() => setPeople(false)} />}
       </div>
-      <Stage
-        chatOpen={chatOpen}
-        onToggleChat={() => setChatOpen((o) => !o)}
-        onShare={() => setPicker(true)}
-        onPeople={() => setPeople(true)}
-      />
-      {chatOpen && <Chat onClose={() => setChatOpen(false)} />}
+      <Stage panel={panel} onPanel={togglePanel} onShare={() => setPicker(true)} onPeople={() => setPeople(true)} />
+      {panel && <RightPanel tab={panel} onTab={setPanel} onClose={() => setPanel(null)} />}
+      <MusicPlayerHost />
       {picker && <ScreenPicker onClose={() => setPicker(false)} />}
 
       {status === 'reconnecting' && (

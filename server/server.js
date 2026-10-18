@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
+import { createMusic, fetchMeta, searchYouTube } from './music.js';
 
 export const PROTOCOL = 1;
 
@@ -35,6 +36,9 @@ const RATE_BURST = 400;
 const RATE_PER_SEC = 120;
 const IMAGE_BURST = 4;
 const IMAGE_PER_SEC = 0.25;
+const MUSIC_BURST = 30;
+const MUSIC_PER_SEC = 5;
+const MAX_MUSIC_ADD = 200;
 const CHAT_BURST = 8;
 const CHAT_PER_SEC = 1;
 
@@ -163,7 +167,13 @@ function serveStatic(webDir, req, res) {
  * Cria o servidor (HTTP + WebSocket). Não começa a escutar sozinho:
  * chame `listen(port)`.
  */
-export function createDiscordiaServer({ webDir = null, env = process.env, log = console.log } = {}) {
+export function createDiscordiaServer({
+  webDir = null,
+  env = process.env,
+  log = console.log,
+  resolveMeta = env.MUSIC_META === 'off' ? null : fetchMeta,
+} = {}) {
+  const youtubeKey = env.YOUTUBE_API_KEY || '';
   /** @type {Map<string, {id: string, history: object[], peers: Map<string, object>}>} */
   const rooms = new Map();
 
@@ -196,6 +206,137 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
     }
   }
 
+  function pushSystem(room, text) {
+    const entry = { id: crypto.randomUUID(), from: 'system', name: 'Discordia', system: true, text, image: null, ts: Date.now() };
+    room.history.push(entry);
+    if (room.history.length > HISTORY) room.history.shift();
+    broadcast(room, { t: 'chat', msg: entry });
+  }
+
+  function broadcastMusic(room) {
+    broadcast(room, { t: 'music', state: room.music.toJSON() });
+  }
+
+  /** Busca título/canal dos vídeos novos em segundo plano e avisa a sala. */
+  function resolveTitles(room, items) {
+    if (!resolveMeta) {
+      for (const i of items) room.music.markNoMeta(i.videoId);
+      return;
+    }
+    const pending = [...new Set(items.filter((i) => !i.title).map((i) => i.videoId))];
+    let changed = false;
+    const flush = () => {
+      if (!changed || !rooms.has(room.id)) return;
+      changed = false;
+      broadcastMusic(room);
+    };
+    const worker = async () => {
+      while (pending.length) {
+        const videoId = pending.shift();
+        try {
+          if (room.music.setMeta(videoId, await resolveMeta(videoId))) changed = true;
+        } catch {
+          // Sem título: a interface mostra um nome genérico; não trava a fila.
+          if (room.music.markNoMeta(videoId)) changed = true;
+        }
+        if (pending.length % 10 === 0) flush();
+      }
+      flush();
+    };
+    for (let k = 0; k < 4; k++) void worker();
+  }
+
+  async function handleMusic(room, peer, msg) {
+    const m = room.music;
+    let changed = false;
+    switch (msg.op) {
+      case 'add': {
+        const items = Array.isArray(msg.items) ? msg.items.slice(0, MAX_MUSIC_ADD) : [];
+        const mode = ['end', 'next', 'now'].includes(msg.mode) ? msg.mode : 'end';
+        const added = m.add(items, peer.name, mode);
+        if (!added.length) return;
+        changed = true;
+        // Uma música só: espera um instante pelo título pra o aviso sair bonito.
+        if (added.length === 1 && !added[0].title && resolveMeta) {
+          try {
+            const meta = await Promise.race([resolveMeta(added[0].videoId), new Promise((_, no) => setTimeout(no, 2000))]);
+            m.setMeta(added[0].videoId, meta);
+          } catch {
+            // Sem título por enquanto; a busca em segundo plano tenta de novo.
+          }
+        }
+        const label = added.length === 1 ? `“${added[0].title ?? 'um vídeo'}”` : `${added.length} músicas`;
+        pushSystem(room, `🎵 ${peer.name} adicionou ${label}${mode === 'next' ? ' pra tocar a seguir' : mode === 'now' ? ' e tocou agora' : ' à fila'}.`);
+        resolveTitles(room, added);
+        break;
+      }
+      case 'play':
+        changed = m.play();
+        break;
+      case 'pause':
+        changed = m.pause();
+        break;
+      case 'seek':
+        changed = m.seek(Number(msg.position));
+        break;
+      case 'skip': {
+        const before = m.current();
+        changed = m.skip();
+        if (changed && before) pushSystem(room, `⏭️ ${peer.name} pulou “${before.title ?? 'a música'}”.`);
+        break;
+      }
+      case 'prev':
+        changed = m.prev();
+        break;
+      case 'jump':
+        changed = m.jump(String(msg.id));
+        break;
+      case 'remove':
+        changed = m.remove(String(msg.id));
+        break;
+      case 'move':
+        changed = m.move(String(msg.id), Number(msg.to));
+        break;
+      case 'shuffle':
+        changed = m.shuffle();
+        break;
+      case 'clear':
+        changed = m.clear();
+        if (changed) pushSystem(room, `⏹️ ${peer.name} limpou a fila de música.`);
+        break;
+      case 'loop':
+        changed = m.setLoop(msg.mode);
+        break;
+      case 'ended':
+        changed = m.ended(String(msg.id));
+        break;
+      case 'error':
+        changed = m.failed(String(msg.id));
+        break;
+      case 'duration':
+        changed = m.setDuration(String(msg.id), Number(msg.seconds));
+        break;
+      case 'search': {
+        const q = String(msg.q ?? '').trim().slice(0, 120);
+        if (!q) return;
+        if (!youtubeKey) {
+          send(peer, { t: 'music-search', q, results: [], error: 'Busca por nome não configurada no servidor.' });
+          return;
+        }
+        try {
+          send(peer, { t: 'music-search', q, results: await searchYouTube(q, youtubeKey) });
+        } catch (err) {
+          log('[música] busca falhou', err.message);
+          send(peer, { t: 'music-search', q, results: [], error: 'A busca falhou. Tente colar o link.' });
+        }
+        return;
+      }
+      default:
+        return;
+    }
+    if (changed) broadcastMusic(room);
+  }
+
   function publicPeer(p) {
     return { id: p.id, name: p.name, avatar: p.avatar, state: p.state };
   }
@@ -221,6 +362,7 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
       alive: true,
       rate: bucket(RATE_BURST, RATE_PER_SEC),
       chatRate: bucket(CHAT_BURST, CHAT_PER_SEC),
+      musicRate: bucket(MUSIC_BURST, MUSIC_PER_SEC),
       imageRate: bucket(IMAGE_BURST, IMAGE_PER_SEC),
     };
 
@@ -252,7 +394,7 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
             return;
           }
           if (!room) {
-            room = { id: roomId, history: [], peers: new Map() };
+            room = { id: roomId, history: [], peers: new Map(), music: createMusic(), musicTimer: null };
             rooms.set(roomId, room);
           }
           peer.name = normalizeName(msg.name);
@@ -266,6 +408,9 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
             peers: [...room.peers.values()].map(publicPeer),
             history: room.history,
             iceServers: iceServersFor(peer.id, env),
+            serverNow: Date.now(),
+            music: room.music.toJSON(),
+            features: { search: !!youtubeKey },
           });
           room.peers.set(peer.id, peer);
           peer.room = room;
@@ -314,11 +459,17 @@ export function createDiscordiaServer({ webDir = null, env = process.env, log = 
           broadcast(peer.room, { t: 'profile', id: peer.id, name: peer.name, avatar: peer.avatar }, peer.id);
           return;
         }
+        case 'music': {
+          const room = peer.room;
+          if (!room || !take(peer.musicRate)) return;
+          handleMusic(room, peer, msg);
+          return;
+        }
         case 'leave':
           leaveRoom(peer);
           return;
         case 'ping':
-          send(peer, { t: 'pong', ts: msg.ts });
+          send(peer, { t: 'pong', ts: msg.ts, now: Date.now() });
           return;
         default:
           return;

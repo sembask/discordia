@@ -20,6 +20,11 @@ sem cadastro e sem anúncio. A voz e a tela vão **direto de um PC pro outro**
 - **Perfil**: foto e nome editáveis a qualquer momento (clique no seu avatar).
 - **Volumes**: da sua voz (com limitador que evita estourar/distorcer) e de tudo
   que você ouve, direto no painel de baixo (botão de ajustes ao lado do mudo).
+- **Música da sala, sincronizada** ("ouvir juntos"): cole um link do YouTube
+  (vídeo ou playlist inteira) ou use `/play` no chat. Fila compartilhada,
+  pular, voltar, pausar, embaralhar, repetir, arrastar pra reordenar,
+  volume próprio da música e **abaixa sozinha quando alguém fala**. Mini-player
+  no canto ou "assistir junto" em tela grande.
 - **Tema claro, escuro ou do sistema.**
 - **Apps para Windows, macOS e Linux**, e uma versão web (entra pelo navegador
   sem instalar).
@@ -63,6 +68,32 @@ O mesmo servidor entrega o app pelo navegador. Com ele no ar em
 Web × app de baixar: os dois conversam entre si na mesma sala. O app instalado
 tem o seletor de tela com miniaturas e, no Windows, o áudio do computador sem
 precisar marcar nada no navegador; o resto é igual.
+
+## Música da sala
+
+Cada pessoa toca no player oficial do YouTube na própria tela, e o servidor
+mantém todo mundo no mesmo segundo (nada é baixado do YouTube, então não viola
+os termos dele e o IP do servidor não corre risco de bloqueio).
+
+Comandos no chat:
+
+| Comando | O que faz |
+| --- | --- |
+| `/play link` | adiciona vídeo ou playlist no fim da fila (`/p`, `/tocar`) |
+| `/next link` | adiciona pra tocar a seguir |
+| `/play` · `/pause` | continua · pausa |
+| `/skip` | pula (`/s`, `/pular`) |
+| `/shuffle` · `/loop` | embaralha o que falta · alterna repetir (desligado → fila → só esta) |
+| `/stop` | limpa a fila |
+| `/volume 40` | volume da música (só pra você) |
+
+**Buscar pelo nome (opcional):** crie uma chave grátis da *YouTube Data API v3*
+no [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com)
+e coloque no servidor a variável de ambiente `YOUTUBE_API_KEY`. Aí dá pra digitar
+`/play nome da música` ou buscar pelo painel. Sem a chave, funciona colando links.
+
+Vídeos que o dono bloqueou pra tocar fora do YouTube são marcados com ⚠ e
+pulados sozinhos.
 
 ## Rodar no seu PC (desenvolvimento)
 

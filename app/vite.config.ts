@@ -4,7 +4,7 @@ import tailwindcss from '@tailwindcss/vite';
 
 // A CSP vai só no build: em dev o React Refresh injeta um script inline.
 const CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://i.ytimg.com; frame-src 'self' http: https:; " +
   "media-src 'self' blob: mediastream:; font-src 'self' data:; connect-src 'self' ws: wss: http: https:";
 
 function cspInBuild() {

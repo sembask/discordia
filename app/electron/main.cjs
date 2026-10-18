@@ -128,6 +128,8 @@ function createWindow() {
       nodeIntegration: false,
       backgroundThrottling: false,
       spellcheck: false,
+      // A música da sala começa sozinha quando alguém dá play.
+      autoplayPolicy: 'no-user-gesture-required',
     },
   });
 

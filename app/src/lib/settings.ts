@@ -33,6 +33,11 @@ export interface Settings {
   micGain: number;
   /** Volume de tudo que eu ouço, 0..2. */
   outputVolume: number;
+  /** Volume da música da sala (0..100) — separado das vozes. */
+  musicVolume: number;
+  musicMuted: boolean;
+  /** Abaixa a música enquanto alguém fala. */
+  musicDuck: boolean;
 }
 
 const KEY = 'discordia.settings';
@@ -96,6 +101,9 @@ const DEFAULTS: Settings = {
   avatar: null,
   micGain: 1,
   outputVolume: 1,
+  musicVolume: 60,
+  musicMuted: false,
+  musicDuck: true,
 };
 
 function load(): Settings {

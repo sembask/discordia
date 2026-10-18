@@ -2,9 +2,10 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ImageOff, ImagePlus, Loader2, SendHorizontal, X } from 'lucide-react';
 import { call, type ChatMessage } from '../lib/call';
 import { pickImageFile, prepareChatImage } from '../lib/image';
+import { music } from '../lib/music';
 import { settings } from '../lib/settings';
 import { useStore } from '../lib/store';
-import { Avatar, IconButton, cx } from './ui';
+import { Avatar, cx } from './ui';
 
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g;
 const GROUP_MS = 5 * 60_000;
@@ -34,7 +35,7 @@ function firstImage(list: DataTransferItemList | FileList | null | undefined): F
   return null;
 }
 
-export function Chat({ onClose }: { onClose: () => void }) {
+export function Chat() {
   const messages = useStore(call.store, (s) => s.messages);
   const selfId = useStore(call.store, (s) => s.selfId);
   const peers = useStore(call.store, (s) => s.peers);
@@ -75,6 +76,10 @@ export function Chat({ onClose }: { onClose: () => void }) {
 
   const send = () => {
     if (!text.trim() && !image) return;
+    if (!image && runCommand(text)) {
+      setText('');
+      return;
+    }
     call.sendChat(text, image);
     setText('');
     setImage(null);
@@ -84,8 +89,8 @@ export function Chat({ onClose }: { onClose: () => void }) {
   const avatarOf = (m: ChatMessage) => (m.from === selfId ? myAvatar : (peers[m.from]?.avatar ?? null));
 
   return (
-    <aside
-      className="animate-fade absolute inset-y-0 right-0 z-30 flex w-full shrink-0 flex-col border-l border-line bg-panel shadow-soft sm:w-80 lg:static lg:shadow-none"
+    <div
+      className="relative flex min-h-0 flex-1 flex-col"
       onDragOver={(e) => {
         if (Array.from(e.dataTransfer.types).includes('Files')) {
           e.preventDefault();
@@ -101,13 +106,6 @@ export function Chat({ onClose }: { onClose: () => void }) {
         void attach(firstImage(e.dataTransfer.files));
       }}
     >
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
-        <span className="font-bold">Chat da sala</span>
-        <IconButton label="Fechar chat" onClick={onClose} className="size-8">
-          <X size={16} />
-        </IconButton>
-      </div>
-
       <div ref={list} className="selectable relative min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {messages.length === 0 && <p className="mt-10 text-center text-sm text-faint">Nenhuma mensagem ainda. Diga oi! 👋</p>}
         {messages.map((m, i) => (
@@ -161,7 +159,7 @@ export function Chat({ onClose }: { onClose: () => void }) {
             rows={1}
             value={text}
             maxLength={2000}
-            placeholder={image ? 'Legenda (opcional)' : 'Mensagem'}
+            placeholder={image ? 'Legenda (opcional)' : 'Mensagem  ·  /play link pra tocar música'}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
               const file = firstImage(e.clipboardData.items);
@@ -200,12 +198,65 @@ export function Chat({ onClose }: { onClose: () => void }) {
           <img src={zoom} alt="" className="max-h-full max-w-full rounded-lg object-contain shadow-2xl" />
         </div>
       )}
-    </aside>
+    </div>
   );
 }
 
 function isGrouped(prev: ChatMessage | undefined, m: ChatMessage) {
-  return !!prev && prev.from === m.from && m.ts - prev.ts < GROUP_MS;
+  return !!prev && !prev.system && !m.system && prev.from === m.from && m.ts - prev.ts < GROUP_MS;
+}
+
+/** Comandos de música no chat. Devolve true se era um comando. */
+function runCommand(raw: string): boolean {
+  const text = raw.trim();
+  if (!text.startsWith('/')) return false;
+  const [cmd, ...rest] = text.slice(1).split(/\s+/);
+  const arg = rest.join(' ');
+  switch (cmd.toLowerCase()) {
+    case 'play':
+    case 'p':
+    case 'tocar':
+      if (arg) void music.add(arg);
+      else music.op('play');
+      return true;
+    case 'next':
+    case 'seguinte':
+      if (arg) void music.add(arg, 'next');
+      return true;
+    case 'skip':
+    case 's':
+    case 'pular':
+      music.op('skip');
+      return true;
+    case 'pause':
+    case 'pausar':
+      music.op('pause');
+      return true;
+    case 'resume':
+    case 'continuar':
+      music.op('play');
+      return true;
+    case 'stop':
+    case 'parar':
+      music.op('clear');
+      return true;
+    case 'shuffle':
+    case 'embaralhar':
+      music.op('shuffle');
+      return true;
+    case 'loop':
+    case 'repetir':
+      music.cycleLoop();
+      return true;
+    case 'volume':
+    case 'vol': {
+      const v = Number(arg);
+      if (Number.isFinite(v)) settings.set({ musicVolume: Math.max(0, Math.min(100, Math.round(v))), musicMuted: false });
+      return true;
+    }
+    default:
+      return false;
+  }
 }
 
 function Message({
@@ -223,6 +274,14 @@ function Message({
   onZoom: (src: string) => void;
   onLoad: () => void;
 }) {
+  if (msg.system) {
+    return (
+      <div className="mt-2 flex items-center gap-2 rounded-lg px-2 py-1 text-xs text-muted">
+        <span className="min-w-0 flex-1 break-words">{msg.text}</span>
+        <span className="shrink-0 text-[10px] text-faint">{time(msg.ts)}</span>
+      </div>
+    );
+  }
   return (
     <div className={cx('flex gap-2.5 rounded-lg px-1.5 hover:bg-hover/50', grouped ? 'py-0.5' : 'mt-3 py-1')}>
       <div className="w-8 shrink-0">{!grouped && <Avatar name={msg.name} src={avatar} size={32} />}</div>

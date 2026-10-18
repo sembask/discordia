@@ -38,6 +38,8 @@ export interface ChatMessage {
   image?: string | null;
   /** A imagem saiu do histórico do servidor (só as mais recentes ficam). */
   expired?: boolean;
+  /** Aviso automático da sala (ex.: música adicionada). */
+  system?: boolean;
   ts: number;
 }
 
@@ -218,6 +220,12 @@ class Call {
   private screenCodec = 'video/H264';
   private chatVisible = false;
   private pingTimer: number | null = null;
+  /** Diferença entre o relógio do servidor e o meu (ms). */
+  private clockOffset = 0;
+  private bestRtt = Infinity;
+  private listeners = new Map<string, Set<(msg: any) => void>>();
+  /** Recursos que o servidor oferece (ex.: busca de música). */
+  features: { search?: boolean } = {};
 
   constructor() {
     audio.onSpeaking((speaking) => this.store.set({ speaking }));
@@ -311,6 +319,24 @@ class Call {
     };
   }
 
+  /** Escuta mensagens do servidor de um tipo (ex.: 'music'). */
+  on(type: string, fn: (msg: any) => void): () => void {
+    let set = this.listeners.get(type);
+    if (!set) this.listeners.set(type, (set = new Set()));
+    set.add(fn);
+    return () => set!.delete(fn);
+  }
+
+  /** Manda uma mensagem crua pro servidor (usado pela música). */
+  sendRaw(msg: object) {
+    this.send(msg);
+  }
+
+  /** Agora, no relógio do servidor (ms). */
+  serverNow(): number {
+    return Date.now() + this.clockOffset;
+  }
+
   private send(msg: object) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }
@@ -326,7 +352,13 @@ class Call {
         }
         this.store.set({ status: 'connected', error: null, room: msg.room, selfId: msg.id, peers, messages: msg.history ?? [] });
         for (const id of Object.keys(peers)) this.ensurePeer(id);
+        if (typeof msg.serverNow === 'number') this.clockOffset = msg.serverNow - Date.now();
+        this.bestRtt = Infinity;
+        this.features = msg.features ?? {};
+        // Algumas medidas rápidas acertam o relógio; depois, uma a cada 20 s.
+        for (const ms of [0, 400, 1200]) setTimeout(() => this.send({ t: 'ping', ts: Date.now() }), ms);
         this.pingTimer = window.setInterval(() => this.send({ t: 'ping', ts: Date.now() }), 20_000);
+        this.emit(msg);
         return;
       }
       case 'peer-joined': {
@@ -374,6 +406,16 @@ class Call {
         if (!mine && settings.get().sounds) audio.chime('message');
         return;
       }
+      case 'pong': {
+        if (typeof msg.now !== 'number') return;
+        const rtt = Date.now() - msg.ts;
+        // A medida com menor ida-e-volta é a mais precisa.
+        if (rtt <= this.bestRtt * 1.5) {
+          this.bestRtt = Math.min(this.bestRtt, rtt);
+          this.clockOffset = msg.now + rtt / 2 - Date.now();
+        }
+        return;
+      }
       case 'error':
         if (msg.code === 'room-full' || msg.code === 'bad-room') {
           this.leave();
@@ -381,8 +423,13 @@ class Call {
         this.store.set({ error: msg.message });
         return;
       default:
+        this.emit(msg);
         return;
     }
+  }
+
+  private emit(msg: any) {
+    for (const fn of this.listeners.get(msg.t) ?? []) fn(msg);
   }
 
   // ---------------------------------------------------------------- peers
