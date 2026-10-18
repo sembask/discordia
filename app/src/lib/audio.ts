@@ -4,6 +4,81 @@
 // Tudo passa por um AudioContext a 48 kHz (a taxa nativa do Opus — sem
 // reamostragem, sem perda) e por um ganho mestre (o "ensurdecer").
 
+import gateWorkletUrl from './worklets/noise-gate.worklet.js?url';
+import { GtcrnWorkletNode, RnnoiseWorkletNode, loadGtcrn, loadRnnoise } from '@sapphi-red/web-noise-suppressor';
+import rnnoiseWorkletUrl from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url';
+import rnnoiseWasmUrl from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
+import rnnoiseSimdWasmUrl from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
+import gtcrnWorkletUrl from '@sapphi-red/web-noise-suppressor/gtcrnWorklet.js?url';
+import gtcrnWasmUrl from '@sapphi-red/web-noise-suppressor/gtcrn.wasm?url';
+
+export type Suppressor = 'rnnoise' | 'gtcrn';
+
+export interface GateOptions {
+  enabled: boolean;
+  /** Limite escolhido pelo próprio app a partir do ruído do ambiente. */
+  auto: boolean;
+  /** Limite manual, em dBFS (ex.: -50). */
+  thresholdDb: number;
+  /** Quanto abaixar quando fechado, em dB (100 = silenciar). */
+  rangeDb: number;
+  /** Quanto tempo abaixo do limite até fechar, em ms. */
+  holdMs: number;
+}
+
+export interface GateState {
+  levelDb: number;
+  thresholdDb: number;
+  open: boolean;
+  floorDb: number;
+}
+
+export interface MicChainOptions {
+  gain: number;
+  stereo: boolean;
+  suppressor: Suppressor | null;
+  gate: GateOptions;
+}
+
+const loadedModules = new WeakMap<BaseAudioContext, Map<string, Promise<void>>>();
+
+/** Carrega um módulo de AudioWorklet uma vez por contexto de áudio. */
+function ensureModule(ctx: AudioContext, url: string): Promise<void> {
+  let mods = loadedModules.get(ctx);
+  if (!mods) loadedModules.set(ctx, (mods = new Map()));
+  let p = mods.get(url);
+  if (!p) {
+    p = ctx.audioWorklet.addModule(url);
+    mods.set(url, p);
+  }
+  return p;
+}
+
+const wasmCache = new Map<Suppressor, Promise<ArrayBuffer>>();
+
+function wasmFor(kind: Suppressor): Promise<ArrayBuffer> {
+  let p = wasmCache.get(kind);
+  if (!p) {
+    p =
+      kind === 'rnnoise'
+        ? loadRnnoise({ url: rnnoiseWasmUrl, simdUrl: rnnoiseSimdWasmUrl })
+        : loadGtcrn({ url: gtcrnWasmUrl });
+    p.catch(() => wasmCache.delete(kind));
+    wasmCache.set(kind, p);
+  }
+  return p;
+}
+
+async function createSuppressor(ctx: AudioContext, kind: Suppressor, channels: number) {
+  const wasmBinary = await wasmFor(kind);
+  if (kind === 'rnnoise') {
+    await ensureModule(ctx, rnnoiseWorkletUrl);
+    return new RnnoiseWorkletNode(ctx, { maxChannels: channels, wasmBinary });
+  }
+  await ensureModule(ctx, gtcrnWorkletUrl);
+  return new GtcrnWorkletNode(ctx, { maxChannels: channels, wasmBinary });
+}
+
 interface Source {
   trackId: string;
   el: HTMLAudioElement;
@@ -146,37 +221,70 @@ class AudioEngine {
   }
 
   /**
-   * Passa o microfone por um ganho antes de mandar (o "volume da minha voz").
-   * Devolve a faixa já processada, que é a que vai pros amigos.
+   * Cadeia do microfone antes de mandar pros amigos:
+   *   mic → [supressão por IA] → portão de ruído → volume → limitador → envio.
+   * Devolve a faixa já processada, que é a que vai pra rede.
    */
-  micPipeline(raw: MediaStreamTrack, gain: number, stereo: boolean) {
+  async micPipeline(raw: MediaStreamTrack, opts: MicChainOptions) {
     const ctx = this.ensure();
     const source = ctx.createMediaStreamSource(new MediaStream([raw]));
-    // O ganho entra pela metade e o limitador "desfaz" isso: assim ele enxerga
-    // até 2× o teto e arredonda os picos em vez de estourar (distorcer).
+    const channels = opts.stereo ? 2 : 1;
+
+    // 1. Supressão por IA (opcional). Se falhar, segue sem ela e avisa.
+    let ai: (AudioWorkletNode & { destroy?: () => void }) | null = null;
+    let aiError: string | null = null;
+    if (opts.suppressor) {
+      try {
+        ai = await createSuppressor(ctx, opts.suppressor, channels);
+      } catch (err) {
+        console.warn('[áudio] supressão por IA indisponível', err);
+        aiError = 'A supressão por IA não carregou neste aparelho; usando sem ela.';
+      }
+    }
+
+    // 2. Portão de ruído (limite em dB).
+    await ensureModule(ctx, gateWorkletUrl);
+    const gate = new AudioWorkletNode(ctx, 'discordia-noise-gate', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [channels],
+    });
+    gate.port.postMessage(opts.gate);
+    gate.port.onmessage = (e) => {
+      this.gateState = e.data as GateState;
+    };
+
+    // 3. Volume + limitador. O ganho entra pela metade e o limitador "desfaz"
+    // isso: assim ele enxerga até 2× o teto e arredonda os picos em vez de estourar.
     const node = ctx.createGain();
-    node.gain.value = gain / LIMITER_HEADROOM;
+    node.gain.value = opts.gain / LIMITER_HEADROOM;
     const limiter = ctx.createWaveShaper();
     limiter.curve = limiterCurve();
     limiter.oversample = '2x';
     const dest = ctx.createMediaStreamDestination();
-    dest.channelCount = stereo ? 2 : 1;
+    dest.channelCount = channels;
     dest.channelCountMode = 'explicit';
-    source.connect(node);
-    node.connect(limiter);
-    limiter.connect(dest);
+
+    const chain: AudioNode[] = [source, ...(ai ? [ai] : []), gate, node, limiter, dest];
+    for (let k = 0; k < chain.length - 1; k++) chain[k].connect(chain[k + 1]);
     const track = dest.stream.getAudioTracks()[0];
     return {
       track,
+      aiError,
       setGain: (g: number) => node.gain.setTargetAtTime(g / LIMITER_HEADROOM, ctx.currentTime, 0.03),
+      setGate: (g: GateOptions) => gate.port.postMessage(g),
       dispose: () => {
-        source.disconnect();
-        node.disconnect();
-        limiter.disconnect();
+        for (const n of chain) n.disconnect();
+        ai?.destroy?.();
+        gate.port.onmessage = null;
+        this.gateState = null;
         track.stop();
       },
     };
   }
+
+  /** Último estado do portão (nível, limite em uso, aberto/fechado). */
+  gateState: GateState | null = null;
 
   async setOutputDevice(deviceId: string) {
     this.sinkId = deviceId === 'default' ? '' : deviceId;
@@ -289,3 +397,6 @@ class AudioEngine {
 }
 
 export const audio = new AudioEngine();
+
+// Exposto pra depuração e pros testes automáticos.
+(window as unknown as { __discordiaAudio: AudioEngine }).__discordiaAudio = audio;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Camera, Headphones, Mic, Settings2, Trash2, Volume2 } from 'lucide-react';
 import { audio } from '../lib/audio';
 import { call } from '../lib/call';
@@ -6,30 +6,8 @@ import { pickImageFile, prepareAvatar } from '../lib/image';
 import { settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { useDevices } from './SettingsModal';
+import { NoiseControls } from './NoiseControls';
 import { Avatar, Button, Popover, Select, Slider, TextInput, Toggle } from './ui';
-
-/** Medidor ao vivo da minha voz (já com o volume aplicado). */
-function LiveMicMeter() {
-  const [level, setLevel] = useState(0);
-  const muted = useStore(call.store, (s) => s.muted);
-  const raf = useRef(0);
-  useEffect(() => {
-    const tick = () => {
-      setLevel(audio.micLevel());
-      raf.current = requestAnimationFrame(tick);
-    };
-    tick();
-    return () => cancelAnimationFrame(raf.current);
-  }, []);
-  return (
-    <div className="h-1.5 overflow-hidden rounded-full bg-panel-2">
-      <div
-        className={muted ? 'h-full rounded-full bg-faint' : 'h-full rounded-full bg-gradient-to-r from-success to-accent'}
-        style={{ width: `${Math.round(level * 100)}%`, transition: 'width 60ms linear' }}
-      />
-    </div>
-  );
-}
 
 /** Ajustes rápidos de voz, abertos pelo painel do usuário (canto inferior). */
 export function VoicePopover({ onClose, onMore }: { onClose: () => void; onMore: () => void }) {
@@ -41,7 +19,7 @@ export function VoicePopover({ onClose, onMore }: { onClose: () => void; onMore:
     void call.acquireMic();
   };
   return (
-    <Popover onClose={onClose} className="absolute bottom-full left-2 mb-2 w-[300px] space-y-4">
+    <Popover onClose={onClose} className="absolute bottom-full left-2 mb-2 max-h-[calc(100vh-7rem)] w-[340px] space-y-4 overflow-y-auto">
       <div className="text-sm font-bold">Voz</div>
 
       <div className="space-y-1.5">
@@ -51,7 +29,6 @@ export function VoicePopover({ onClose, onMore }: { onClose: () => void; onMore:
         <Select value={s.inputDeviceId} options={inputs} onChange={(v) => reopenMic({ inputDeviceId: v })} />
       </div>
       <Slider label="Volume da minha voz" icon={<Mic size={13} />} value={s.micGain} onChange={(v) => call.setMicGain(v)} />
-      <LiveMicMeter />
 
       <div className="space-y-1.5">
         <div className="flex items-center gap-1.5 text-xs font-semibold text-muted">
@@ -68,10 +45,7 @@ export function VoicePopover({ onClose, onMore }: { onClose: () => void; onMore:
       </div>
       <Slider label="Volume do que eu ouço" icon={<Volume2 size={13} />} value={s.outputVolume} onChange={(v) => call.setOutputVolume(v)} />
 
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium">Supressão de ruído</span>
-        <Toggle checked={s.noiseSuppression && !s.hifi} disabled={s.hifi} onChange={(v) => reopenMic({ noiseSuppression: v })} />
-      </div>
+      <NoiseControls compact />
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium">Alta fidelidade (música)</span>
         <Toggle checked={s.hifi} onChange={(v) => reopenMic({ hifi: v })} />

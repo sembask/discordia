@@ -11,8 +11,11 @@ const {
   shell,
   nativeTheme,
   systemPreferences,
+  protocol,
+  net,
 } = require('electron');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const IS_MAC = process.platform === 'darwin';
@@ -23,6 +26,31 @@ const THEMES = {
   dark: { background: '#0b0c10', overlay: '#0b0c10', symbol: '#c9cdd8' },
   light: { background: '#f4f5f9', overlay: '#f4f5f9', symbol: '#3b4152' },
 };
+
+// A interface é servida por app://discordia/ em vez de file://: é o jeito
+// recomendado pelo Electron e o que permite carregar os módulos de áudio
+// (worklets) e os modelos de IA (wasm) como num site normal.
+const APP_SCHEME = 'app';
+const APP_HOST = 'discordia';
+const DIST = path.join(__dirname, '..', 'dist');
+const MIME = { '.wasm': 'application/wasm', '.js': 'text/javascript', '.html': 'text/html', '.css': 'text/css', '.svg': 'image/svg+xml' };
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
+]);
+
+function serveApp() {
+  protocol.handle(APP_SCHEME, async (request) => {
+    const url = new URL(request.url);
+    const rel = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
+    const file = path.normalize(path.join(DIST, rel));
+    if (!file.startsWith(DIST)) return new Response('proibido', { status: 403 });
+    const res = await net.fetch(pathToFileURL(file).toString());
+    const type = MIME[path.extname(file)];
+    if (!type) return res;
+    return new Response(res.body, { status: res.status, headers: { 'content-type': type } });
+  });
+}
 
 /** Fonte escolhida no seletor, consumida pelo próximo getDisplayMedia. */
 let pendingSource = null;
@@ -111,7 +139,7 @@ function createWindow() {
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (event, url) => {
-    if (DEV_URL && url.startsWith(DEV_URL)) return;
+    if ((DEV_URL && url.startsWith(DEV_URL)) || url.startsWith(`${APP_SCHEME}://${APP_HOST}/`)) return;
     event.preventDefault();
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
   });
@@ -119,7 +147,7 @@ function createWindow() {
   if (DEV_URL) {
     win.loadURL(DEV_URL);
   } else {
-    win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    win.loadURL(`${APP_SCHEME}://${APP_HOST}/index.html`);
   }
 }
 
@@ -206,6 +234,7 @@ app.whenReady().then(async () => {
       // Usuário pode negar; o app segue só ouvindo.
     }
   }
+  serveApp();
   setupPermissions();
   setupIpc();
   createWindow();

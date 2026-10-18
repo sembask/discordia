@@ -7,6 +7,10 @@ sem cadastro e sem anúncio. A voz e a tela vão **direto de um PC pro outro**
 - **Voz**: Opus a 48 kHz, até 96 kbps (voz) ou **256 kbps em estéreo** no modo
   alta fidelidade (música/instrumento). Supressão de ruído, cancelamento de eco,
   volume individual por amigo e indicador de quem está falando.
+- **Ruído sob controle**: supressão do navegador ou por **IA no próprio PC**
+  (RNNoise ou GTCRN), mais um **portão de ruído em dB** com medidor ao vivo:
+  limite manual ou automático, quanto abaixar (até silenciar) e quanto tempo
+  esperar antes de fechar.
 - **Tela**: 720p, 1080p, 1440p, **4K** ou resolução original, a 15/30/**60 fps**.
   Modo "Movimento" (jogo/vídeo) ou "Texto" (código/documento nítido). Escolhe
   sozinho o codec que sua placa de vídeo faz em hardware (AV1, VP9 ou H.264).

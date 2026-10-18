@@ -2,6 +2,8 @@ import { createStore } from './store';
 
 export type Theme = 'light' | 'dark' | 'system';
 export type VideoCodec = 'auto' | 'h264' | 'vp9' | 'av1';
+/** off = nada · browser = filtro do próprio navegador · rnnoise/gtcrn = IA rodando no PC. */
+export type NoiseMode = 'off' | 'browser' | 'rnnoise' | 'gtcrn';
 
 export interface Settings {
   name: string;
@@ -9,7 +11,13 @@ export interface Settings {
   theme: Theme;
   inputDeviceId: string;
   outputDeviceId: string;
-  noiseSuppression: boolean;
+  noiseMode: NoiseMode;
+  /** Portão de ruído: corta/abaixa tudo abaixo de um limite em dB. */
+  gateEnabled: boolean;
+  gateAuto: boolean;
+  gateThresholdDb: number;
+  gateRangeDb: number;
+  gateHoldMs: number;
   echoCancellation: boolean;
   autoGainControl: boolean;
   /** Microfone sem processamento, estéreo e com bitrate alto (música, instrumento). */
@@ -72,7 +80,12 @@ const DEFAULTS: Settings = {
   theme: 'system',
   inputDeviceId: 'default',
   outputDeviceId: 'default',
-  noiseSuppression: true,
+  noiseMode: 'browser',
+  gateEnabled: true,
+  gateAuto: true,
+  gateThresholdDb: -50,
+  gateRangeDb: 40,
+  gateHoldMs: 250,
   echoCancellation: true,
   autoGainControl: true,
   hifi: false,
@@ -88,6 +101,9 @@ const DEFAULTS: Settings = {
 function load(): Settings {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || '{}');
+    // Versão antiga guardava só liga/desliga da supressão.
+    if (raw.noiseMode === undefined && raw.noiseSuppression === false) raw.noiseMode = 'off';
+    delete raw.noiseSuppression;
     // Na versão web o servidor é sempre o próprio site.
     return { ...DEFAULTS, ...raw, ...(isWeb ? { serverUrl: DEFAULTS.serverUrl } : {}) };
   } catch {

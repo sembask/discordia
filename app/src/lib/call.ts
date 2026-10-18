@@ -8,7 +8,8 @@
 
 import { audio } from './audio';
 import { tuneSdp } from './sdp';
-import { settings, type VideoCodec } from './settings';
+import { settings, type Settings, type VideoCodec } from './settings';
+import type { GateOptions } from './audio';
 import { createStore } from './store';
 
 export interface PeerMediaState {
@@ -178,10 +179,21 @@ function micConstraints(): MediaTrackConstraints {
   return {
     ...device,
     echoCancellation: s.echoCancellation,
-    noiseSuppression: s.noiseSuppression,
+    // Com IA ligada, o filtro do navegador sai (os dois juntos deixam a voz "metálica").
+    noiseSuppression: s.noiseMode === 'browser',
     autoGainControl: s.autoGainControl,
     channelCount: { ideal: 1 },
     sampleRate: { ideal: 48000 },
+  };
+}
+
+function gateOptions(s: Settings): GateOptions {
+  return {
+    enabled: s.gateEnabled,
+    auto: s.gateAuto,
+    thresholdDb: s.gateThresholdDb,
+    rangeDb: s.gateRangeDb,
+    holdMs: s.gateHoldMs,
   };
 }
 
@@ -196,7 +208,9 @@ class Call {
   private retryTimer: number | null = null;
   private micStream: MediaStream | null = null;
   /** Ganho da minha voz entre o microfone e o envio. */
-  private micChain: ReturnType<typeof audio.micPipeline> | null = null;
+  private micChain: Awaited<ReturnType<typeof audio.micPipeline>> | null = null;
+  /** Cada reabertura do mic ganha um número; uma mais nova cancela a anterior. */
+  private micSeq = 0;
   /** Stream "contêiner" do microfone: id fixo, a faixa dentro troca à vontade. */
   private micOut = new MediaStream();
   private screen: MediaStream | null = null;
@@ -237,6 +251,7 @@ class Call {
     this.pingTimer = null;
     this.closePeers();
     this.stopScreen(false);
+    this.micSeq++; // cancela uma reabertura do mic que ainda esteja carregando
     this.micChain?.dispose();
     this.micChain = null;
     for (const t of this.micStream?.getTracks() ?? []) t.stop();
@@ -632,6 +647,7 @@ class Call {
 
   /** (Re)abre o microfone com as configurações atuais e troca a faixa em todas as conexões. */
   async acquireMic() {
+    const seq = ++this.micSeq;
     let stream: MediaStream | null = null;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(), video: false });
@@ -653,17 +669,31 @@ class Call {
         });
       }
     }
+    const raw = stream?.getAudioTracks()[0] ?? null;
+    const s = settings.get();
+    const chain = raw
+      ? await audio.micPipeline(raw, {
+          gain: s.micGain,
+          stereo: s.hifi,
+          suppressor: !s.hifi && (s.noiseMode === 'rnnoise' || s.noiseMode === 'gtcrn') ? s.noiseMode : null,
+          gate: gateOptions(s),
+        })
+      : null;
+    if (seq !== this.micSeq) {
+      // Outra reabertura começou enquanto esta carregava: descarta esta.
+      chain?.dispose();
+      for (const t of stream?.getTracks() ?? []) t.stop();
+      return;
+    }
+    if (chain?.aiError) this.store.set({ micError: chain.aiError });
     this.micChain?.dispose();
-    this.micChain = null;
+    this.micChain = chain;
     for (const t of this.micStream?.getTracks() ?? []) t.stop();
     this.micStream = stream;
     for (const t of this.micOut.getTracks()) this.micOut.removeTrack(t);
-    const raw = stream?.getAudioTracks()[0] ?? null;
     let track: MediaStreamTrack | null = null;
-    if (raw) {
-      const s = settings.get();
-      this.micChain = audio.micPipeline(raw, s.micGain, s.hifi);
-      track = this.micChain.track;
+    if (chain) {
+      track = chain.track;
       track.contentHint = s.hifi ? 'music' : 'speech';
       track.enabled = !this.store.get().muted;
       this.micOut.addTrack(track);
@@ -789,6 +819,12 @@ class Call {
     this.send({ t: 'profile', name, avatar });
   }
 
+  /** Ajusta o portão de ruído na hora (sem reabrir o microfone). */
+  setGate(patch: Partial<Pick<Settings, 'gateEnabled' | 'gateAuto' | 'gateThresholdDb' | 'gateRangeDb' | 'gateHoldMs'>>) {
+    settings.set(patch);
+    this.micChain?.setGate(gateOptions(settings.get()));
+  }
+
   setMicGain(gain: number) {
     settings.set({ micGain: gain });
     this.micChain?.setGain(gain);
@@ -822,7 +858,8 @@ class Call {
     if (!inbound) return null;
     const codec = inbound.codecId ? (report.get(inbound.codecId) as any)?.mimeType?.replace('video/', '') ?? '' : '';
     const prev = peer.statsPrev;
-    const kbps = prev ? ((inbound.bytesReceived - prev.bytes) * 8) / (inbound.timestamp - prev.ts) : 0;
+    const dt = prev ? inbound.timestamp - prev.ts : 0;
+    const kbps = prev && dt > 0 ? ((inbound.bytesReceived - prev.bytes) * 8) / dt : 0;
     peer.statsPrev = { bytes: inbound.bytesReceived, ts: inbound.timestamp };
     return {
       width: inbound.frameWidth ?? 0,

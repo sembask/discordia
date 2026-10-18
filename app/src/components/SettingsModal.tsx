@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AudioLines, Monitor, Moon, Palette, Server, Sun, Video } from 'lucide-react';
 import { call } from '../lib/call';
 import { isWeb, settings, type Settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { audio } from '../lib/audio';
+import { NoiseControls } from './NoiseControls';
 import { Field, Modal, Segmented, Select, Slider, TextInput, Toggle, cx } from './ui';
 
 type Tab = 'appearance' | 'voice' | 'video' | 'server';
@@ -142,54 +143,6 @@ export function useDevices(kind: MediaDeviceKind) {
   return list;
 }
 
-function MicMeter() {
-  const [level, setLevel] = useState(0);
-  const deviceId = useStore(settings, (s) => s.inputDeviceId);
-  const raf = useRef(0);
-  useEffect(() => {
-    let stream: MediaStream | null = null;
-    let ctx: AudioContext | null = null;
-    let alive = true;
-    void (async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: deviceId !== 'default' ? { deviceId: { exact: deviceId } } : true,
-        });
-        if (!alive) return;
-        ctx = new AudioContext();
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 1024;
-        ctx.createMediaStreamSource(stream).connect(analyser);
-        const buf = new Float32Array(analyser.fftSize);
-        const tick = () => {
-          analyser.getFloatTimeDomainData(buf);
-          let sum = 0;
-          for (const v of buf) sum += v * v;
-          setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 6));
-          raf.current = requestAnimationFrame(tick);
-        };
-        tick();
-      } catch {
-        setLevel(0);
-      }
-    })();
-    return () => {
-      alive = false;
-      cancelAnimationFrame(raf.current);
-      for (const t of stream?.getTracks() ?? []) t.stop();
-      void ctx?.close();
-    };
-  }, [deviceId]);
-  return (
-    <div className="h-2 overflow-hidden rounded-full bg-panel-2">
-      <div
-        className="h-full rounded-full bg-gradient-to-r from-success to-accent transition-[width] duration-75"
-        style={{ width: `${Math.round(level * 100)}%` }}
-      />
-    </div>
-  );
-}
-
 function Voice() {
   const s = useStore(settings, (x) => x);
   const inputs = useDevices('audioinput');
@@ -211,13 +164,11 @@ function Voice() {
           />
         </Field>
       </div>
-      <Field label="Teste do microfone" hint="Fale algo: a barra deve se mexer.">
-        <MicMeter />
-      </Field>
       <div className="grid gap-4 sm:grid-cols-2">
         <Slider label="Volume da minha voz" value={s.micGain} onChange={(v) => call.setMicGain(v)} />
         <Slider label="Volume do que eu ouço" value={s.outputVolume} onChange={(v) => call.setOutputVolume(v)} />
       </div>
+      <NoiseControls />
       <div className="space-y-4 rounded-2xl border border-line p-4">
         <Row
           title="Modo alta fidelidade"
@@ -226,9 +177,6 @@ function Voice() {
           <Toggle checked={s.hifi} onChange={(v) => setVoice({ hifi: v })} />
         </Row>
         <div className={cx('space-y-4', s.hifi && 'pointer-events-none opacity-40')}>
-          <Row title="Supressão de ruído" text="Corta ventilador, teclado e barulho de fundo.">
-            <Toggle checked={s.noiseSuppression} onChange={(v) => setVoice({ noiseSuppression: v })} />
-          </Row>
           <Row title="Cancelamento de eco" text="Evita que os amigos se ouçam pela sua caixa de som.">
             <Toggle checked={s.echoCancellation} onChange={(v) => setVoice({ echoCancellation: v })} />
           </Row>
