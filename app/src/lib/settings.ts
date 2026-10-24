@@ -52,7 +52,7 @@ function defaultServer(): string {
 }
 
 /** Endereço do site a partir do endereço do servidor (wss://x → https://x). */
-function siteOf(serverUrl: string): string | null {
+export function siteOf(serverUrl: string): string | null {
   try {
     const u = new URL(serverUrl);
     if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return null;

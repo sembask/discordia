@@ -8,7 +8,7 @@
 
 import { audio } from './audio';
 import { tuneSdp } from './sdp';
-import { settings, type Settings, type VideoCodec } from './settings';
+import { isWeb, settings, siteOf, type Settings, type VideoCodec } from './settings';
 import type { GateOptions } from './audio';
 import { createStore } from './store';
 
@@ -29,6 +29,26 @@ export interface RemotePeer {
   screenStream: MediaStream | null;
 }
 
+/** Arquivo mandado no chat. Fica no servidor só por um tempo (30 min). */
+export interface ChatFile {
+  id: string;
+  name: string;
+  size: number;
+  mime: string;
+  /** Horário do servidor (ms) em que o arquivo some. */
+  expiresAt: number;
+  /** Caminho no servidor (/files/...). Use call.fileUrl() pra ter o endereço completo. */
+  url: string;
+  expired?: boolean;
+}
+
+export interface Upload {
+  promise: Promise<ChatFile>;
+  abort: () => void;
+}
+
+export class UploadError extends Error {}
+
 export interface ChatMessage {
   id: string;
   from: string;
@@ -36,6 +56,7 @@ export interface ChatMessage {
   text: string;
   /** Imagem anexada (data URL) ou null. */
   image?: string | null;
+  file?: ChatFile | null;
   /** A imagem saiu do histórico do servidor (só as mais recentes ficam). */
   expired?: boolean;
   /** Aviso automático da sala (ex.: música adicionada). */
@@ -92,6 +113,18 @@ const SCREEN_AUDIO_BITRATE = 192_000;
 const MIN_VIDEO_KBPS = 1500;
 const MAX_VIDEO_KBPS = 40_000;
 const PROTOCOL = 1;
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let v = bytes / 1024;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u += 1;
+  }
+  return `${v < 10 ? v.toFixed(1).replace('.', ',') : Math.round(v)} ${units[u]}`;
+}
 
 /** Bitrate de vídeo proporcional a pixels × quadros (bits por pixel por quadro). */
 export function videoBitrateKbps(width: number, height: number, fps: number, mode: ScreenOptions['mode']): number {
@@ -225,7 +258,7 @@ class Call {
   private bestRtt = Infinity;
   private listeners = new Map<string, Set<(msg: any) => void>>();
   /** Recursos que o servidor oferece (ex.: busca de música). */
-  features: { search?: boolean } = {};
+  features: { search?: boolean; files?: { maxBytes: number; ttlMs: number } } = {};
 
   constructor() {
     audio.onSpeaking((speaking) => this.store.set({ speaking }));
@@ -404,6 +437,13 @@ class Call {
           unread: !mine && !this.chatVisible ? s.unread + 1 : s.unread,
         }));
         if (!mine && settings.get().sounds) audio.chime('message');
+        return;
+      }
+      case 'file-expired': {
+        const id = msg.id as string;
+        this.store.set((s) => ({
+          messages: s.messages.map((m) => (m.file?.id === id ? { ...m, file: { ...m.file, expired: true } } : m)),
+        }));
         return;
       }
       case 'pong': {
@@ -853,9 +893,66 @@ class Call {
 
   // ---------------------------------------------------------------- chat
 
-  sendChat(text: string, image: string | null = null) {
+  sendChat(text: string, image: string | null = null, file: string | null = null) {
     const clean = text.trim();
-    if (clean || image) this.send({ t: 'chat', text: clean, image });
+    if (clean || image || file) this.send({ t: 'chat', text: clean, image, file });
+  }
+
+  /** Endereço HTTP do servidor em que estamos (onde ficam os arquivos). */
+  site(): string {
+    if (isWeb) return location.origin;
+    return siteOf(this.target?.url ?? settings.get().serverUrl) ?? '';
+  }
+
+  fileUrl(file: ChatFile, download = false): string {
+    return `${this.site()}${file.url}${download ? '?download' : ''}`;
+  }
+
+  /**
+   * Sobe um arquivo pro servidor (uma vez só; cada amigo baixa de lá).
+   * O arquivo ainda não aparece no chat: depois chame sendChat(texto, null, id).
+   */
+  uploadFile(file: File, onProgress: (fraction: number) => void): Upload {
+    const xhr = new XMLHttpRequest();
+    const promise = new Promise<ChatFile>((resolve, reject) => {
+      const selfId = this.store.get().selfId;
+      const max = this.features.files?.maxBytes;
+      if (!selfId || this.store.get().status !== 'connected') {
+        reject(new UploadError('Sem conexão com o servidor.'));
+        return;
+      }
+      if (max && file.size > max) {
+        reject(new UploadError(`“${file.name}” é grande demais (máximo ${formatBytes(max)}).`));
+        return;
+      }
+      if (file.size === 0) {
+        reject(new UploadError(`“${file.name}” está vazio.`));
+        return;
+      }
+      xhr.open('POST', `${this.site()}/files?peer=${encodeURIComponent(selfId)}`);
+      xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
+      xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name));
+      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+      xhr.onload = () => {
+        let body: { error?: string } & Partial<ChatFile> = {};
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          // Resposta sem JSON (proxy no meio do caminho, por exemplo).
+        }
+        if (xhr.status === 200 && body.id) {
+          resolve({ ...(body as ChatFile), url: `/files/${body.id}` });
+        } else if (xhr.status === 413) {
+          reject(new UploadError(body.error ?? `“${file.name}” é grande demais pro servidor.`));
+        } else {
+          reject(new UploadError(body.error ?? `Não deu pra enviar “${file.name}” (erro ${xhr.status}).`));
+        }
+      };
+      xhr.onerror = () => reject(new UploadError(`O envio de “${file.name}” falhou. Confira a conexão.`));
+      xhr.onabort = () => reject(new UploadError('cancelado'));
+      xhr.send(file);
+    });
+    return { promise, abort: () => xhr.abort() };
   }
 
   // ---------------------------------------------------------------- perfil e volumes

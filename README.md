@@ -17,6 +17,9 @@ sem cadastro e sem anúncio. A voz e a tela vão **direto de um PC pro outro**
   No Windows, transmite também o **áudio do computador**.
 - **Chat de texto com imagens** (botão, Ctrl+V ou arrastar), histórico curto e
   links clicáveis.
+- **Mandar arquivos** de qualquer tipo pelo chat (clipe, arrastar ou colar,
+  vários de uma vez), com barra de progresso. Imagem, vídeo e áudio dá pra ver
+  e ouvir ali mesmo. Os arquivos **somem sozinhos do servidor depois de 30 min**.
 - **Perfil**: foto e nome editáveis a qualquer momento (clique no seu avatar).
 - **Volumes**: da sua voz (com limitador que evita estourar/distorcer) e de tudo
   que você ouve, direto no painel de baixo (botão de ajustes ao lado do mudo).
@@ -94,6 +97,29 @@ e coloque no servidor a variável de ambiente `YOUTUBE_API_KEY`. Aí dá pra dig
 
 Vídeos que o dono bloqueou pra tocar fora do YouTube são marcados com ⚠ e
 pulados sozinhos.
+
+## Arquivos no chat
+
+Quem envia sobe o arquivo **uma vez** pro servidor e cada amigo baixa de lá
+(o link é aleatório, impossível de adivinhar). Depois do prazo o arquivo é
+apagado do disco e o cartão no chat vira "o arquivo expirou" pra todo mundo.
+Nada fica guardado: reiniciar o servidor também apaga tudo.
+
+Variáveis de ambiente (opcionais):
+
+| Variável | Padrão | O que é |
+| --- | --- | --- |
+| `FILE_TTL_MIN` | `30` | minutos até o arquivo sumir |
+| `MAX_FILE_MB` | `95` | tamanho máximo de cada arquivo |
+| `MAX_FILES_TOTAL_MB` | `5120` | espaço total que os arquivos podem ocupar |
+| `FILES_DIR` | pasta temporária | onde os arquivos ficam enquanto valem |
+
+> O limite de 95 MB é por causa do Cloudflare: com o proxy dele ligado (nuvem
+> laranja), o plano grátis recusa envios acima de 100 MB. Se o domínio não
+> passar pelo proxy do Cloudflare, pode subir `MAX_FILE_MB` (ex.: `2048`).
+
+Por segurança, só imagem, vídeo, áudio, PDF e texto puro abrem no navegador;
+qualquer outro arquivo (inclusive `.html`) é sempre baixado, nunca executado.
 
 ## Rodar no seu PC (desenvolvimento)
 

@@ -4,7 +4,8 @@
 // (WebRTC ponto a ponto). O servidor só faz três coisas:
 //   1. mantém as salas (quem está em qual sala, com qual nome e estado);
 //   2. repassa as mensagens de negociação WebRTC (ofertas, respostas, ICE);
-//   3. distribui o chat de texto da sala (com um histórico curto em memória).
+//   3. distribui o chat de texto da sala (com um histórico curto em memória);
+//   4. guarda por pouco tempo (30 min) os arquivos mandados no chat.
 //
 // Opcionalmente serve a versão WEB do app (pasta WEB_DIR), pra quem quiser
 // entrar pelo navegador sem baixar nada.
@@ -12,9 +13,11 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { createMusic, fetchMeta, searchYouTube } from './music.js';
+import { createFileStore, FileError } from './files.js';
 
 export const PROTOCOL = 1;
 
@@ -41,6 +44,21 @@ const MUSIC_PER_SEC = 5;
 const MAX_MUSIC_ADD = 200;
 const CHAT_BURST = 8;
 const CHAT_PER_SEC = 1;
+const UPLOAD_BURST = 10;
+const UPLOAD_PER_SEC = 0.2;
+const FILE_ROUTE = /^\/files\/([A-Za-z0-9_-]{16,64})$/;
+
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, GET, OPTIONS',
+  'access-control-allow-headers': 'content-type, x-file-name',
+  'access-control-max-age': '86400',
+};
+
+/** Só os campos que os amigos precisam ver de um arquivo do chat. */
+function publicFile(meta) {
+  return { id: meta.id, name: meta.name, size: meta.size, mime: meta.mime, expiresAt: meta.expiresAt, url: `/files/${meta.id}` };
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -176,13 +194,89 @@ export function createDiscordiaServer({
   const youtubeKey = env.YOUTUBE_API_KEY || '';
   /** @type {Map<string, {id: string, history: object[], peers: Map<string, object>}>} */
   const rooms = new Map();
+  /** Todo mundo conectado, pelo id (o id é secreto: só o dono e a sala dele conhecem). */
+  const peersById = new Map();
+  /** Dono e sala de cada arquivo enviado. */
+  const fileOwners = new Map();
+
+  const files = createFileStore({
+    dir: env.FILES_DIR || path.join(os.tmpdir(), `discordia-files-${process.pid}`),
+    ttlMs: Number(env.FILE_TTL_MIN || 30) * 60_000,
+    // 95 MB: o Cloudflare (plano grátis, proxy ligado) recusa envios acima de 100 MB.
+    maxFileBytes: Number(env.MAX_FILE_MB || 95) * 1024 * 1024,
+    maxTotalBytes: Number(env.MAX_FILES_TOTAL_MB || 5120) * 1024 * 1024,
+    onExpire(id) {
+      const owner = fileOwners.get(id);
+      fileOwners.delete(id);
+      const room = owner && rooms.get(owner.roomId);
+      if (!room) return;
+      let found = false;
+      room.history = room.history.map((m) => {
+        if (m.file?.id !== id) return m;
+        found = true;
+        return { ...m, file: { ...m.file, expired: true } };
+      });
+      if (found) broadcast(room, { t: 'file-expired', id });
+    },
+  });
+
+  function jsonReply(res, status, body) {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...CORS });
+    res.end(JSON.stringify(body));
+  }
+
+  async function handleUpload(req, res) {
+    const url = new URL(req.url, 'http://x');
+    const peer = peersById.get(String(url.searchParams.get('peer') ?? ''));
+    if (!peer?.room) {
+      req.resume();
+      jsonReply(res, 403, { error: 'Entre numa sala pra mandar arquivos.' });
+      return;
+    }
+    if (!take(peer.uploadRate)) {
+      req.resume();
+      jsonReply(res, 429, { error: 'Calma! Muitos arquivos em pouco tempo.' });
+      return;
+    }
+    let name = 'arquivo';
+    try {
+      name = decodeURIComponent(String(req.headers['x-file-name'] ?? 'arquivo'));
+    } catch {
+      // Nome mal codificado: fica o genérico.
+    }
+    try {
+      const meta = await files.accept(req, { name, mime: req.headers['content-type'] });
+      fileOwners.set(meta.id, { peerId: peer.id, roomId: peer.room?.id, posted: false });
+      jsonReply(res, 200, { ...meta, ttlMs: files.ttlMs });
+    } catch (err) {
+      const status = err instanceof FileError ? err.status : 500;
+      if (status === 500) log('[arquivos] envio falhou', err.message);
+      if (!res.headersSent && !res.destroyed) jsonReply(res, status, { error: err instanceof FileError ? err.message : 'O envio falhou.' });
+    }
+  }
 
   const httpServer = http.createServer((req, res) => {
+    const pathname = req.url.split('?')[0];
+    if (pathname === '/files') {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, CORS).end();
+        return;
+      }
+      if (req.method === 'POST') {
+        void handleUpload(req, res);
+        return;
+      }
+    }
+    const fileMatch = FILE_ROUTE.exec(pathname);
+    if (fileMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+      files.serve(req, res, fileMatch[1]);
+      return;
+    }
     if (req.url === '/health') {
       let peers = 0;
       for (const r of rooms.values()) peers += r.peers.size;
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, protocol: PROTOCOL, rooms: rooms.size, peers }));
+      res.end(JSON.stringify({ ok: true, protocol: PROTOCOL, rooms: rooms.size, peers, files: files.files.size }));
       return;
     }
     if (webDir && fs.existsSync(webDir)) {
@@ -364,7 +458,9 @@ export function createDiscordiaServer({
       chatRate: bucket(CHAT_BURST, CHAT_PER_SEC),
       musicRate: bucket(MUSIC_BURST, MUSIC_PER_SEC),
       imageRate: bucket(IMAGE_BURST, IMAGE_PER_SEC),
+      uploadRate: bucket(UPLOAD_BURST, UPLOAD_PER_SEC),
     };
+    peersById.set(peer.id, peer);
 
     ws.on('pong', () => {
       peer.alive = true;
@@ -410,7 +506,7 @@ export function createDiscordiaServer({
             iceServers: iceServersFor(peer.id, env),
             serverNow: Date.now(),
             music: room.music.toJSON(),
-            features: { search: !!youtubeKey },
+            features: { search: !!youtubeKey, files: { maxBytes: files.maxFileBytes, ttlMs: files.ttlMs } },
           });
           room.peers.set(peer.id, peer);
           peer.room = room;
@@ -440,12 +536,25 @@ export function createDiscordiaServer({
             send(peer, { t: 'error', code: 'bad-image', message: 'Imagem inválida ou grande demais.' });
             return;
           }
-          if (!text && !image) return;
-          if (!take(peer.chatRate) || (image && !take(peer.imageRate))) {
+          // Arquivo já enviado por HTTP: só o dono anuncia, uma vez, na própria sala.
+          let file = null;
+          if (msg.file != null) {
+            const id = String(msg.file);
+            const owner = fileOwners.get(id);
+            const meta = files.files.get(id);
+            if (!owner || !meta || owner.peerId !== peer.id || owner.roomId !== room.id || owner.posted) {
+              send(peer, { t: 'error', code: 'bad-file', message: 'Esse arquivo não está mais disponível.' });
+              return;
+            }
+            owner.posted = true;
+            file = publicFile(meta);
+          }
+          if (!text && !image && !file) return;
+          if ((!file && !take(peer.chatRate)) || (image && !take(peer.imageRate))) {
             send(peer, { t: 'error', code: 'slow-down', message: 'Calma! Você está mandando mensagens rápido demais.' });
             return;
           }
-          const entry = { id: crypto.randomUUID(), from: peer.id, name: peer.name, text, image, ts: Date.now() };
+          const entry = { id: crypto.randomUUID(), from: peer.id, name: peer.name, text, image, file, ts: Date.now() };
           room.history.push(entry);
           if (room.history.length > HISTORY) room.history.shift();
           trimHistoryImages(room.history);
@@ -476,7 +585,10 @@ export function createDiscordiaServer({
       }
     });
 
-    ws.on('close', () => leaveRoom(peer));
+    ws.on('close', () => {
+      leaveRoom(peer);
+      peersById.delete(peer.id);
+    });
     ws.on('error', () => {});
     ws.peer = peer;
   });
@@ -498,11 +610,13 @@ export function createDiscordiaServer({
   return {
     httpServer,
     rooms,
+    files,
     listen(port, host) {
       return new Promise((resolve) => httpServer.listen(port, host, () => resolve(httpServer.address())));
     },
     close() {
       clearInterval(heartbeat);
+      files.close();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       return new Promise((resolve) => httpServer.close(() => resolve()));

@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ImageOff, ImagePlus, Loader2, SendHorizontal, X } from 'lucide-react';
-import { call, type ChatMessage } from '../lib/call';
-import { pickImageFile, prepareChatImage } from '../lib/image';
+import { ImageOff, Loader2, Paperclip, SendHorizontal, X } from 'lucide-react';
+import { call, UploadError, type ChatMessage } from '../lib/call';
+import { pickFiles, prepareChatImage } from '../lib/image';
+import { FileCard, UploadRow, type PendingUpload } from './FileCard';
 import { music } from '../lib/music';
 import { settings } from '../lib/settings';
 import { useStore } from '../lib/store';
@@ -26,14 +27,19 @@ function time(ts: number) {
   return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
-function firstImage(list: DataTransferItemList | FileList | null | undefined): File | null {
-  if (!list) return null;
+function filesOf(list: DataTransferItemList | FileList | null | undefined): File[] {
+  if (!list) return [];
+  const out: File[] = [];
   for (const item of Array.from(list as ArrayLike<DataTransferItem | File>)) {
     const file = item instanceof File ? item : item.kind === 'file' ? item.getAsFile() : null;
-    if (file && file.type.startsWith('image/')) return file;
+    if (file) out.push(file);
   }
-  return null;
+  return out;
 }
+
+/** Imagens comuns vão comprimidas direto no chat; o resto vira arquivo. */
+const INLINE_IMAGE = /^image\/(png|jpeg|webp|gif|avif|bmp)$/;
+let uploadSeq = 0;
 
 export function Chat() {
   const messages = useStore(call.store, (s) => s.messages);
@@ -46,6 +52,7 @@ export function Chat() {
   const [problem, setProblem] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [zoom, setZoom] = useState<string | null>(null);
+  const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const list = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
 
@@ -60,17 +67,52 @@ export function Chat() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
-  const attach = async (file: File | null) => {
-    if (!file) return;
+  const patchUpload = (key: number, patch: Partial<PendingUpload>) =>
+    setUploads((list) => list.map((u) => (u.key === key ? { ...u, ...patch } : u)));
+
+  /** Sobe o arquivo e, quando termina, ele aparece no chat pra todo mundo. */
+  const uploadFile = (file: File) => {
+    const key = ++uploadSeq;
+    const job = call.uploadFile(file, (progress) => patchUpload(key, { progress }));
+    setUploads((list) => [...list, { key, name: file.name, size: file.size, progress: 0, error: null, abort: job.abort }]);
+    job.promise.then(
+      (sent) => {
+        call.sendChat('', null, sent.id);
+        setUploads((list) => list.filter((u) => u.key !== key));
+      },
+      (err: Error) => {
+        if (err instanceof UploadError && err.message === 'cancelado') {
+          setUploads((list) => list.filter((u) => u.key !== key));
+        } else {
+          patchUpload(key, { error: err.message });
+        }
+      },
+    );
+  };
+
+  const attachImage = async (file: File) => {
     setBusy(true);
     setProblem(null);
     try {
       setImage(await prepareChatImage(file));
       input.current?.focus();
-    } catch (err) {
-      setProblem((err as Error).message);
+    } catch {
+      // Grande demais pra ir no chat (GIF enorme, por exemplo): vai como arquivo.
+      uploadFile(file);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const attach = (files: File[]) => {
+    let imageTaken = !!image || busy;
+    for (const file of files) {
+      if (!imageTaken && INLINE_IMAGE.test(file.type)) {
+        imageTaken = true;
+        void attachImage(file);
+      } else {
+        uploadFile(file);
+      }
     }
   };
 
@@ -103,7 +145,7 @@ export function Chat() {
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        void attach(firstImage(e.dataTransfer.files));
+        attach(filesOf(e.dataTransfer.files));
       }}
     >
       <div ref={list} className="selectable relative min-h-0 flex-1 overflow-y-auto px-3 py-3">
@@ -125,6 +167,9 @@ export function Chat() {
       </div>
 
       <div className="border-t border-line p-3">
+        {uploads.map((up) => (
+          <UploadRow key={up.key} up={up} onDismiss={() => setUploads((list) => list.filter((u) => u.key !== up.key))} />
+        ))}
         {(image || busy) && (
           <div className="relative mb-2 inline-block">
             {image ? (
@@ -148,24 +193,25 @@ export function Chat() {
         {problem && <div className="mb-2 rounded-lg bg-danger-soft px-3 py-2 text-xs font-medium text-danger">{problem}</div>}
         <div className="flex items-end gap-1.5 rounded-2xl border border-line bg-panel-2 p-1.5 focus-within:border-accent">
           <button
-            onClick={async () => attach(await pickImageFile())}
-            title="Enviar imagem (ou cole com Ctrl+V / arraste aqui)"
+            onClick={async () => attach(await pickFiles())}
+            title={`Enviar imagem ou arquivo (ou cole com Ctrl+V / arraste aqui). Arquivos somem do servidor depois de ${Math.round((call.features.files?.ttlMs ?? 1_800_000) / 60_000)} min.`}
+            aria-label="Anexar"
             className="grid size-9 shrink-0 place-items-center rounded-xl text-muted transition hover:bg-hover hover:text-fg"
           >
-            <ImagePlus size={18} />
+            <Paperclip size={18} />
           </button>
           <textarea
             ref={input}
             rows={1}
             value={text}
             maxLength={2000}
-            placeholder={image ? 'Legenda (opcional)' : 'Mensagem  ·  /play link pra tocar música'}
+            placeholder={image ? 'Legenda (opcional)' : 'Mensagem ou /play link'}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => {
-              const file = firstImage(e.clipboardData.items);
-              if (file) {
+              const pasted = filesOf(e.clipboardData.items);
+              if (pasted.length) {
                 e.preventDefault();
-                void attach(file);
+                attach(pasted);
               }
             }}
             onKeyDown={(e) => {
@@ -189,7 +235,7 @@ export function Chat() {
 
       {dragging && (
         <div className="pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-2xl border-2 border-dashed border-accent bg-accent-soft/90 text-sm font-semibold text-accent">
-          Solte a imagem pra enviar
+          Solte pra enviar (imagens e arquivos)
         </div>
       )}
 
@@ -298,6 +344,7 @@ function Message({
             <img src={msg.image} alt="Imagem enviada" onLoad={onLoad} className="max-h-60 max-w-full rounded-xl border border-line object-contain" />
           </button>
         )}
+        {msg.file && <FileCard file={msg.file} onZoom={onZoom} onLoad={onLoad} />}
         {msg.expired && (
           <span className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-panel-2 px-2.5 py-1.5 text-xs text-faint">
             <ImageOff size={13} /> Imagem antiga (não está mais disponível)

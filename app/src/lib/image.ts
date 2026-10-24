@@ -69,3 +69,15 @@ export function pickImageFile(): Promise<File | null> {
     input.click();
   });
 }
+
+/** Abre o seletor de arquivos (qualquer tipo, vários de uma vez). */
+export function pickFiles(): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.onchange = () => resolve(Array.from(input.files ?? []));
+    input.oncancel = () => resolve([]);
+    input.click();
+  });
+}
