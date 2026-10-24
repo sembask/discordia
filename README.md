@@ -110,13 +110,15 @@ Variáveis de ambiente (opcionais):
 | Variável | Padrão | O que é |
 | --- | --- | --- |
 | `FILE_TTL_MIN` | `30` | minutos até o arquivo sumir |
-| `MAX_FILE_MB` | `95` | tamanho máximo de cada arquivo |
-| `MAX_FILES_TOTAL_MB` | `5120` | espaço total que os arquivos podem ocupar |
+| `MAX_FILE_MB` | `2048` | tamanho máximo de cada arquivo |
+| `MAX_FILES_TOTAL_MB` | `10240` | espaço total que os arquivos podem ocupar |
+| `FILE_CHUNK_MB` | `8` | tamanho de cada parte do envio |
 | `FILES_DIR` | pasta temporária | onde os arquivos ficam enquanto valem |
 
-> O limite de 95 MB é por causa do Cloudflare: com o proxy dele ligado (nuvem
-> laranja), o plano grátis recusa envios acima de 100 MB. Se o domínio não
-> passar pelo proxy do Cloudflare, pode subir `MAX_FILE_MB` (ex.: `2048`).
+O envio vai em **partes de 8 MB**. Assim o limite do Cloudflare (100 MB por
+requisição e 100 s por requisição) não atrapalha, mesmo com internet lenta.
+Se a conexão cair no meio, o app pergunta ao servidor onde parou e continua
+dali sozinho. Cuide pra VPS ter disco livre pro `MAX_FILES_TOTAL_MB`.
 
 Por segurança, só imagem, vídeo, áudio, PDF e texto puro abrem no navegador;
 qualquer outro arquivo (inclusive `.html`) é sempre baixado, nunca executado.

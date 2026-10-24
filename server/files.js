@@ -1,6 +1,10 @@
 // Transferência de arquivos do chat.
 //
 // Quem envia sobe o arquivo UMA vez pro servidor; cada amigo baixa de lá.
+//
+// O envio é em PARTES pequenas (8 MB): o Cloudflare recusa requisições acima
+// de 100 MB e corta as que passam de 100 s, então nenhuma parte chega perto
+// disso. Se a internet cair no meio, o app pergunta onde parou e continua.
 // Os arquivos são temporários: somem sozinhos depois de `ttlMs` (30 min por
 // padrão), então o servidor nunca acumula nada.
 //
@@ -20,10 +24,16 @@ const INLINE_TYPES = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|ogg|qui
 const MAX_NAME = 200;
 
 export class FileError extends Error {
-  constructor(status, message) {
+  constructor(status, message, extra = {}) {
     super(message);
     this.status = status;
+    this.extra = extra;
   }
+}
+
+function formatMb(bytes) {
+  const mb = bytes / 1024 / 1024;
+  return mb >= 1024 ? `${(mb / 1024).toFixed(mb % 1024 ? 1 : 0).replace('.', ',')} GB` : `${Math.round(mb)} MB`;
 }
 
 export function cleanFileName(raw) {
@@ -43,14 +53,34 @@ function cleanMime(raw) {
 export function createFileStore({
   dir,
   ttlMs = 30 * 60_000,
-  maxFileBytes = 1024 * 1024 * 1024,
+  maxFileBytes = 2 * 1024 * 1024 * 1024,
   maxTotalBytes = 10 * 1024 * 1024 * 1024,
+  chunkBytes = 8 * 1024 * 1024,
+  /** Envio parado há mais que isso é jogado fora (quem mandou sumiu). */
+  stallMs = 10 * 60_000,
   onExpire = () => {},
   now = Date.now,
 }) {
   /** @type {Map<string, {id, name, size, mime, path, expiresAt, timer}>} */
   const files = new Map();
+  /** Envios em andamento. */
+  const uploads = new Map();
   let reserved = 0; // bytes em uso + uploads em andamento
+
+  function touch(up) {
+    clearTimeout(up.timer);
+    up.timer = setTimeout(() => dropUpload(up.id), stallMs);
+    up.timer.unref?.();
+  }
+
+  function dropUpload(id) {
+    const up = uploads.get(id);
+    if (!up) return;
+    uploads.delete(id);
+    clearTimeout(up.timer);
+    reserved -= up.size;
+    fsp.rm(up.path, { force: true }).catch(() => {});
+  }
 
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
@@ -70,57 +100,114 @@ export function createFileStore({
     ttlMs,
     maxFileBytes,
 
-    /** Recebe o corpo da requisição e guarda no disco. */
-    async accept(req, { name, mime }) {
-      const declared = Number(req.headers['content-length']);
-      if (!Number.isFinite(declared) || declared <= 0) throw new FileError(411, 'Tamanho do arquivo não informado.');
-      if (declared > maxFileBytes) {
-        throw new FileError(413, `Arquivo grande demais (máximo ${Math.round(maxFileBytes / 1024 / 1024)} MB).`);
-      }
-      if (reserved + declared > maxTotalBytes) throw new FileError(507, 'O servidor está cheio de arquivos agora. Tente daqui a pouco.');
+    chunkBytes,
 
-      reserved += declared;
+    /**
+     * Começa um envio em partes. Reserva o espaço já, pra ninguém descobrir só
+     * no fim que o servidor estava cheio.
+     */
+    begin({ name, size, mime }) {
+      const total = Number(size);
+      if (!Number.isSafeInteger(total) || total <= 0) throw new FileError(400, 'Tamanho do arquivo inválido.');
+      if (total > maxFileBytes) {
+        throw new FileError(413, `Arquivo grande demais (máximo ${formatMb(maxFileBytes)}).`);
+      }
+      if (reserved + total > maxTotalBytes) throw new FileError(507, 'O servidor está cheio de arquivos agora. Tente daqui a pouco.');
+      reserved += total;
       const id = crypto.randomBytes(18).toString('base64url');
-      const file = path.join(dir, id);
-      let received = 0;
+      const up = {
+        id,
+        name: cleanFileName(name),
+        mime: cleanMime(mime),
+        size: total,
+        received: 0,
+        path: path.join(dir, `${id}.part`),
+        busy: false,
+        timer: null,
+      };
+      fs.writeFileSync(up.path, '');
+      uploads.set(id, up);
+      touch(up);
+      return { upload: id, chunkBytes };
+    },
+
+    /** Posição em que o envio parou (pra continuar depois de cair). */
+    status(uploadId) {
+      const up = uploads.get(uploadId);
+      if (!up) throw new FileError(404, 'Esse envio não existe mais. Mande o arquivo de novo.');
+      return { received: up.received, size: up.size };
+    },
+
+    /**
+     * Recebe UMA parte, que tem que começar exatamente onde a anterior parou.
+     * Devolve { received } ou, na última parte, { done: true, file }.
+     */
+    async part(req, uploadId, offset) {
+      const up = uploads.get(uploadId);
+      if (!up) throw new FileError(404, 'Esse envio não existe mais. Mande o arquivo de novo.');
+      if (up.busy) throw new FileError(409, 'Essa parte já está sendo recebida.', { received: up.received });
+      if (Number(offset) !== up.received) throw new FileError(409, 'Parte fora de ordem.', { received: up.received });
+      const declared = Number(req.headers['content-length']);
+      const left = up.size - up.received;
+      if (!Number.isFinite(declared) || declared <= 0) throw new FileError(411, 'Tamanho da parte não informado.');
+      if (declared > chunkBytes || declared > left) throw new FileError(400, 'Parte maior que o permitido.');
+
+      up.busy = true;
+      clearTimeout(up.timer);
+      let got = 0;
       try {
         await new Promise((resolve, reject) => {
-          const out = fs.createWriteStream(file, { flags: 'wx' });
+          const out = fs.createWriteStream(up.path, { flags: 'r+', start: up.received });
           req.on('data', (chunk) => {
-            received += chunk.length;
-            if (received > declared) {
+            got += chunk.length;
+            if (got > declared) {
               req.destroy();
-              reject(new FileError(400, 'O arquivo veio maior que o anunciado.'));
+              reject(new FileError(400, 'A parte veio maior que o anunciado.'));
             }
           });
           req.on('close', () => {
-            if (!req.complete) reject(new FileError(499, 'Envio cancelado.'));
+            if (!req.complete) reject(new FileError(499, 'Envio interrompido.'));
           });
           req.on('error', reject);
           out.on('error', reject);
           out.on('finish', resolve);
           req.pipe(out);
         });
-        if (received !== declared) throw new FileError(400, 'O envio foi interrompido.');
+        if (got !== declared) throw new FileError(400, 'A parte veio incompleta.');
+        up.received += got;
       } catch (err) {
-        reserved -= declared;
-        await fsp.rm(file, { force: true }).catch(() => {});
+        // Volta pro último ponto bom: a parte inteira é reenviada.
+        await fsp.truncate(up.path, up.received).catch(() => {});
         throw err;
+      } finally {
+        up.busy = false;
+        if (uploads.has(up.id)) touch(up);
       }
 
+      if (up.received < up.size) return { received: up.received };
+
+      uploads.delete(up.id);
+      clearTimeout(up.timer);
+      const finalPath = path.join(dir, up.id);
+      await fsp.rename(up.path, finalPath);
       const meta = {
-        id,
-        name: cleanFileName(name),
-        size: received,
-        mime: cleanMime(mime),
-        path: file,
+        id: up.id,
+        name: up.name,
+        size: up.size,
+        mime: up.mime,
+        path: finalPath,
         expiresAt: now() + ttlMs,
         timer: null,
       };
-      meta.timer = setTimeout(() => remove(id, true), ttlMs);
+      meta.timer = setTimeout(() => remove(meta.id, true), ttlMs);
       meta.timer.unref?.();
-      files.set(id, meta);
-      return { id, name: meta.name, size: meta.size, mime: meta.mime, expiresAt: meta.expiresAt };
+      files.set(meta.id, meta);
+      return { done: true, received: up.size, file: { id: meta.id, name: meta.name, size: meta.size, mime: meta.mime, expiresAt: meta.expiresAt } };
+    },
+
+    /** Desiste de um envio no meio (botão cancelar). */
+    abort(uploadId) {
+      dropUpload(uploadId);
     },
 
     /** Entrega um arquivo (com suporte a Range, pra vídeo poder avançar). */
@@ -162,7 +249,10 @@ export function createFileStore({
       fs.createReadStream(f.path, { start, end }).on('error', () => res.destroy()).pipe(res);
     },
 
+    uploads,
+
     close() {
+      for (const id of [...uploads.keys()]) dropUpload(id);
       for (const id of [...files.keys()]) remove(id, false);
       fs.rmSync(dir, { recursive: true, force: true });
     },

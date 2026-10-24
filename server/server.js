@@ -47,11 +47,12 @@ const CHAT_PER_SEC = 1;
 const UPLOAD_BURST = 10;
 const UPLOAD_PER_SEC = 0.2;
 const FILE_ROUTE = /^\/files\/([A-Za-z0-9_-]{16,64})$/;
+const UPLOAD_ROUTE = /^\/files\/upload\/([A-Za-z0-9_-]{16,64})$/;
 
 const CORS = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'POST, GET, OPTIONS',
-  'access-control-allow-headers': 'content-type, x-file-name',
+  'access-control-allow-methods': 'POST, PUT, GET, DELETE, OPTIONS',
+  'access-control-allow-headers': 'content-type',
   'access-control-max-age': '86400',
 };
 
@@ -202,9 +203,10 @@ export function createDiscordiaServer({
   const files = createFileStore({
     dir: env.FILES_DIR || path.join(os.tmpdir(), `discordia-files-${process.pid}`),
     ttlMs: Number(env.FILE_TTL_MIN || 30) * 60_000,
-    // 95 MB: o Cloudflare (plano grátis, proxy ligado) recusa envios acima de 100 MB.
-    maxFileBytes: Number(env.MAX_FILE_MB || 95) * 1024 * 1024,
-    maxTotalBytes: Number(env.MAX_FILES_TOTAL_MB || 5120) * 1024 * 1024,
+    // O envio vai em partes de 8 MB, então o limite de 100 MB do Cloudflare não pesa.
+    maxFileBytes: Number(env.MAX_FILE_MB || 2048) * 1024 * 1024,
+    maxTotalBytes: Number(env.MAX_FILES_TOTAL_MB || 10240) * 1024 * 1024,
+    chunkBytes: Number(env.FILE_CHUNK_MB || 8) * 1024 * 1024,
     onExpire(id) {
       const owner = fileOwners.get(id);
       fileOwners.delete(id);
@@ -225,47 +227,99 @@ export function createDiscordiaServer({
     res.end(JSON.stringify(body));
   }
 
-  async function handleUpload(req, res) {
-    const url = new URL(req.url, 'http://x');
+  function fail(res, err) {
+    const status = err instanceof FileError ? err.status : 500;
+    if (status === 500) log('[arquivos] envio falhou', err.message);
+    if (!res.headersSent && !res.destroyed) {
+      jsonReply(res, status, { error: err instanceof FileError ? err.message : 'O envio falhou.', ...(err.extra ?? {}) });
+    }
+  }
+
+  function readJson(req, max = 8192) {
+    return new Promise((resolve, reject) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > max) {
+          req.destroy();
+          reject(new FileError(413, 'Pedido grande demais.'));
+        }
+      });
+      req.on('end', () => {
+        try {
+          resolve(JSON.parse(body || '{}'));
+        } catch {
+          reject(new FileError(400, 'Pedido inválido.'));
+        }
+      });
+      req.on('error', reject);
+    });
+  }
+
+  /** Quem está enviando cada arquivo (o dono pode reconectar no meio e trocar de id). */
+  const uploadOwners = new Map();
+
+  function peerFrom(url) {
     const peer = peersById.get(String(url.searchParams.get('peer') ?? ''));
-    if (!peer?.room) {
-      req.resume();
-      jsonReply(res, 403, { error: 'Entre numa sala pra mandar arquivos.' });
-      return;
-    }
-    if (!take(peer.uploadRate)) {
-      req.resume();
-      jsonReply(res, 429, { error: 'Calma! Muitos arquivos em pouco tempo.' });
-      return;
-    }
-    let name = 'arquivo';
+    return peer?.room ? peer : null;
+  }
+
+  async function handleFiles(req, res, pathname) {
+    const url = new URL(req.url, 'http://x');
     try {
-      name = decodeURIComponent(String(req.headers['x-file-name'] ?? 'arquivo'));
-    } catch {
-      // Nome mal codificado: fica o genérico.
-    }
-    try {
-      const meta = await files.accept(req, { name, mime: req.headers['content-type'] });
-      fileOwners.set(meta.id, { peerId: peer.id, roomId: peer.room?.id, posted: false });
-      jsonReply(res, 200, { ...meta, ttlMs: files.ttlMs });
+      if (pathname === '/files/start' && req.method === 'POST') {
+        const peer = peerFrom(url);
+        if (!peer) throw new FileError(403, 'Entre numa sala pra mandar arquivos.');
+        if (!take(peer.uploadRate)) throw new FileError(429, 'Calma! Muitos arquivos em pouco tempo.');
+        const info = await readJson(req);
+        const started = files.begin({ name: info.name, size: info.size, mime: info.mime });
+        uploadOwners.set(started.upload, { peerId: peer.id, roomId: peer.room.id });
+        jsonReply(res, 200, started);
+        return;
+      }
+      const m = UPLOAD_ROUTE.exec(pathname);
+      if (!m) throw new FileError(404, 'Não encontrado.');
+      const uploadId = m[1];
+      if (req.method === 'GET') {
+        jsonReply(res, 200, files.status(uploadId));
+        return;
+      }
+      if (req.method === 'DELETE') {
+        files.abort(uploadId);
+        uploadOwners.delete(uploadId);
+        jsonReply(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === 'PUT') {
+        const owner = uploadOwners.get(uploadId);
+        // Reconectou no meio do envio: o arquivo passa a ser do id novo.
+        const peer = peerFrom(url);
+        if (owner && peer) Object.assign(owner, { peerId: peer.id, roomId: peer.room.id });
+        const result = await files.part(req, uploadId, url.searchParams.get('offset'));
+        if (result.done) {
+          uploadOwners.delete(uploadId);
+          if (owner) fileOwners.set(result.file.id, { ...owner, posted: false });
+          result.file.ttlMs = files.ttlMs;
+        }
+        jsonReply(res, 200, result);
+        return;
+      }
+      throw new FileError(405, 'Método não suportado.');
     } catch (err) {
-      const status = err instanceof FileError ? err.status : 500;
-      if (status === 500) log('[arquivos] envio falhou', err.message);
-      if (!res.headersSent && !res.destroyed) jsonReply(res, status, { error: err instanceof FileError ? err.message : 'O envio falhou.' });
+      req.resume();
+      fail(res, err);
     }
   }
 
   const httpServer = http.createServer((req, res) => {
     const pathname = req.url.split('?')[0];
-    if (pathname === '/files') {
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204, CORS).end();
-        return;
-      }
-      if (req.method === 'POST') {
-        void handleUpload(req, res);
-        return;
-      }
+    if (pathname.startsWith('/files/') && req.method === 'OPTIONS') {
+      res.writeHead(204, CORS).end();
+      return;
+    }
+    if (pathname === '/files/start' || UPLOAD_ROUTE.test(pathname)) {
+      void handleFiles(req, res, pathname);
+      return;
     }
     const fileMatch = FILE_ROUTE.exec(pathname);
     if (fileMatch && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -506,7 +560,7 @@ export function createDiscordiaServer({
             iceServers: iceServersFor(peer.id, env),
             serverNow: Date.now(),
             music: room.music.toJSON(),
-            features: { search: !!youtubeKey, files: { maxBytes: files.maxFileBytes, ttlMs: files.ttlMs } },
+            features: { search: !!youtubeKey, files: { maxBytes: files.maxFileBytes, ttlMs: files.ttlMs, chunkBytes: files.chunkBytes } },
           });
           room.peers.set(peer.id, peer);
           peer.room = room;

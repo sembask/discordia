@@ -42,13 +42,29 @@ async function setup(env = {}) {
     c.welcome = await c.next('welcome');
     return c;
   };
-  const upload = (peerId, body, name = 'notas.txt', type = 'text/plain') =>
-    fetch(`${base}/files?peer=${peerId}`, { method: 'POST', body, headers: { 'content-type': type, 'x-file-name': encodeURIComponent(name) } });
-  return { srv, base, join, upload };
+  const start = (peerId, size, name = 'notas.txt', mime = 'text/plain') =>
+    fetch(`${base}/files/start?peer=${peerId}`, { method: 'POST', body: JSON.stringify({ name, size, mime }) });
+  const put = (peerId, upload, offset, body) =>
+    fetch(`${base}/files/upload/${upload}?peer=${peerId}&offset=${offset}`, { method: 'PUT', body });
+  /** Manda o arquivo inteiro em partes, como o app faz. Devolve a última resposta. */
+  const upload = async (peerId, content, name, mime) => {
+    const buf = Buffer.from(content);
+    const r = await start(peerId, buf.length, name, mime);
+    if (r.status !== 200) return { status: r.status, body: await r.json() };
+    const { upload: id, chunkBytes } = await r.json();
+    let last;
+    for (let off = 0; off < buf.length; off += chunkBytes) {
+      last = await put(peerId, id, off, buf.subarray(off, off + chunkBytes));
+      if (last.status !== 200) return { status: last.status, body: await last.json() };
+    }
+    const body = await last.json();
+    return { status: 200, body, file: body.file };
+  };
+  return { srv, base, join, upload, start, put };
 }
 
 test('arquivo: envia, anuncia no chat, baixa (com Range) e vale só pra sala', async () => {
-  const { srv, base, join, upload } = await setup();
+  const { srv, base, join, upload } = await setup({ FILE_CHUNK_MB: String(4 / 1024 / 1024) });
   try {
     const a = await join('Ana');
     const b = await join('Bia');
@@ -59,7 +75,7 @@ test('arquivo: envia, anuncia no chat, baixa (com Range) e vale só pra sala', a
 
     const res = await upload(a.welcome.id, 'olá, mundo! 🌍', 'Relatório final.txt');
     assert.equal(res.status, 200);
-    const meta = await res.json();
+    const meta = res.file;
     assert.equal(meta.name, 'Relatório final.txt');
     assert.equal(meta.size, Buffer.byteLength('olá, mundo! 🌍'));
 
@@ -85,7 +101,7 @@ test('arquivo: envia, anuncia no chat, baixa (com Range) e vale só pra sala', a
     assert.equal(await part.text(), 'ol');
 
     // HTML nunca abre como página: sempre download.
-    const html = await (await upload(a.welcome.id, '<script>alert(1)</script>', 'x.html', 'text/html')).json();
+    const html = (await upload(a.welcome.id, '<script>alert(1)</script>', 'x.html', 'text/html')).file;
     const page = await fetch(`${base}/files/${html.id}`);
     assert.equal(page.headers.get('content-type'), 'application/octet-stream');
     assert.match(page.headers.get('content-disposition'), /^attachment/);
@@ -109,7 +125,7 @@ test('arquivo: some sozinho quando vence e respeita o tamanho máximo', async ()
     const a = await join('Ana');
     assert.equal((await upload(a.welcome.id, 'x'.repeat(2048))).status, 413);
 
-    const meta = await (await upload(a.welcome.id, 'tchau')).json();
+    const meta = (await upload(a.welcome.id, 'tchau')).file;
     a.send({ t: 'chat', text: '', file: meta.id });
     await a.next('chat');
     assert.equal((await fetch(`${base}/files/${meta.id}`)).status, 200);
@@ -118,6 +134,48 @@ test('arquivo: some sozinho quando vence e respeita o tamanho máximo', async ()
     assert.equal(gone.id, meta.id);
     assert.equal((await fetch(`${base}/files/${meta.id}`)).status, 410);
     assert.equal(srv.files.files.size, 0);
+    a.close();
+  } finally {
+    await srv.close();
+  }
+});
+
+test('arquivo em partes: maior que uma parte, fora de ordem, retomada e cancelar', async () => {
+  const { srv, base, join, upload, start, put } = await setup({ FILE_CHUNK_MB: String(1 / 1024) }); // partes de 1 KB
+  try {
+    const a = await join('Ana');
+    const content = Buffer.alloc(10_000).map((_, i) => i % 256);
+
+    // Vai em 10 partes e chega inteiro.
+    const ok = await upload(a.welcome.id, content, 'dados.bin', 'application/octet-stream');
+    assert.equal(ok.status, 200);
+    const back = Buffer.from(await (await fetch(`${base}/files/${ok.file.id}`)).arrayBuffer());
+    assert.ok(back.equals(content));
+
+    // Parte fora de ordem é recusada dizendo onde parou; dá pra continuar dali.
+    const { upload: id } = await (await start(a.welcome.id, 3000, 'x.bin')).json();
+    assert.equal((await put(a.welcome.id, id, 0, content.subarray(0, 1024))).status, 200);
+    const skip = await put(a.welcome.id, id, 2048, content.subarray(0, 1024));
+    assert.equal(skip.status, 409);
+    assert.equal((await skip.json()).received, 1024);
+    assert.equal((await (await fetch(`${base}/files/upload/${id}`)).json()).received, 1024);
+    // Parte maior que o permitido.
+    assert.equal((await put(a.welcome.id, id, 1024, Buffer.alloc(2048))).status, 400);
+    await put(a.welcome.id, id, 1024, content.subarray(1024, 2048));
+    const fin = await (await put(a.welcome.id, id, 2048, content.subarray(2048, 3000))).json();
+    assert.equal(fin.done, true);
+    assert.equal(fin.file.size, 3000);
+
+    // Cancelar no meio apaga o pedaço e libera o espaço.
+    const { upload: id2 } = await (await start(a.welcome.id, 5000, 'y.bin')).json();
+    await put(a.welcome.id, id2, 0, content.subarray(0, 1024));
+    assert.equal(srv.files.uploads.size, 1);
+    await fetch(`${base}/files/upload/${id2}`, { method: 'DELETE' });
+    assert.equal(srv.files.uploads.size, 0);
+    assert.equal((await put(a.welcome.id, id2, 1024, content.subarray(0, 1024))).status, 404);
+
+    // Fora de sala não começa envio.
+    assert.equal((await start('inventado', 10)).status, 403);
     a.close();
   } finally {
     await srv.close();

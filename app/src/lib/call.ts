@@ -258,7 +258,7 @@ class Call {
   private bestRtt = Infinity;
   private listeners = new Map<string, Set<(msg: any) => void>>();
   /** Recursos que o servidor oferece (ex.: busca de música). */
-  features: { search?: boolean; files?: { maxBytes: number; ttlMs: number } } = {};
+  features: { search?: boolean; files?: { maxBytes: number; ttlMs: number; chunkBytes: number } } = {};
 
   constructor() {
     audio.onSpeaking((speaking) => this.store.set({ speaking }));
@@ -910,49 +910,117 @@ class Call {
 
   /**
    * Sobe um arquivo pro servidor (uma vez só; cada amigo baixa de lá).
+   * Vai em partes pequenas (o Cloudflare recusa requisição acima de 100 MB) e,
+   * se a internet cair no meio, pergunta onde parou e continua dali.
    * O arquivo ainda não aparece no chat: depois chame sendChat(texto, null, id).
    */
   uploadFile(file: File, onProgress: (fraction: number) => void): Upload {
-    const xhr = new XMLHttpRequest();
-    const promise = new Promise<ChatFile>((resolve, reject) => {
-      const selfId = this.store.get().selfId;
+    let aborted = false;
+    let current: XMLHttpRequest | null = null;
+    let uploadId: string | null = null;
+    const site = this.site();
+    const peer = () => encodeURIComponent(this.store.get().selfId ?? '');
+
+    const request = (method: string, url: string, body: Blob | string | null, onSent?: (loaded: number) => void) =>
+      new Promise<{ status: number; body: Record<string, unknown> }>((resolve, reject) => {
+        if (aborted) {
+          reject(new UploadError('cancelado'));
+          return;
+        }
+        const xhr = new XMLHttpRequest();
+        current = xhr;
+        xhr.open(method, url);
+        if (typeof body === 'string') xhr.setRequestHeader('content-type', 'application/json');
+        if (onSent) xhr.upload.onprogress = (e) => onSent(e.loaded);
+        xhr.onload = () => {
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed = JSON.parse(xhr.responseText);
+          } catch {
+            // Resposta sem JSON (proxy no meio do caminho, por exemplo).
+          }
+          resolve({ status: xhr.status, body: parsed });
+        };
+        xhr.onerror = () => reject(new UploadError('rede'));
+        xhr.onabort = () => reject(new UploadError('cancelado'));
+        xhr.send(body);
+      });
+
+    const failWith = (status: number, body: Record<string, unknown>): never => {
+      throw new UploadError((body.error as string) ?? `Não deu pra enviar “${file.name}” (erro ${status}).`);
+    };
+
+    const run = async (): Promise<ChatFile> => {
       const max = this.features.files?.maxBytes;
-      if (!selfId || this.store.get().status !== 'connected') {
-        reject(new UploadError('Sem conexão com o servidor.'));
-        return;
-      }
-      if (max && file.size > max) {
-        reject(new UploadError(`“${file.name}” é grande demais (máximo ${formatBytes(max)}).`));
-        return;
-      }
-      if (file.size === 0) {
-        reject(new UploadError(`“${file.name}” está vazio.`));
-        return;
-      }
-      xhr.open('POST', `${this.site()}/files?peer=${encodeURIComponent(selfId)}`);
-      xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
-      xhr.setRequestHeader('x-file-name', encodeURIComponent(file.name));
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-      xhr.onload = () => {
-        let body: { error?: string } & Partial<ChatFile> = {};
+      if (!this.store.get().selfId || this.store.get().status !== 'connected') throw new UploadError('Sem conexão com o servidor.');
+      if (max && file.size > max) throw new UploadError(`“${file.name}” é grande demais (máximo ${formatBytes(max)}).`);
+      if (file.size === 0) throw new UploadError(`“${file.name}” está vazio.`);
+
+      const started = await request(
+        'POST',
+        `${site}/files/start?peer=${peer()}`,
+        JSON.stringify({ name: file.name, size: file.size, mime: file.type || 'application/octet-stream' }),
+      );
+      if (started.status !== 200) failWith(started.status, started.body);
+      uploadId = started.body.upload as string;
+      const chunk = (started.body.chunkBytes as number) || 8 * 1024 * 1024;
+      const partUrl = (offset: number) => `${site}/files/upload/${uploadId}?peer=${peer()}&offset=${offset}`;
+
+      let offset = 0;
+      let failures = 0;
+      while (true) {
+        const end = Math.min(file.size, offset + chunk);
+        let res: { status: number; body: Record<string, unknown> } | null = null;
         try {
-          body = JSON.parse(xhr.responseText);
-        } catch {
-          // Resposta sem JSON (proxy no meio do caminho, por exemplo).
+          res = await request('PUT', partUrl(offset), file.slice(offset, end), (loaded) => onProgress((offset + loaded) / file.size));
+        } catch (err) {
+          if ((err as Error).message === 'cancelado') throw err;
         }
-        if (xhr.status === 200 && body.id) {
-          resolve({ ...(body as ChatFile), url: `/files/${body.id}` });
-        } else if (xhr.status === 413) {
-          reject(new UploadError(body.error ?? `“${file.name}” é grande demais pro servidor.`));
-        } else {
-          reject(new UploadError(body.error ?? `Não deu pra enviar “${file.name}” (erro ${xhr.status}).`));
+        if (res?.status === 200) {
+          failures = 0;
+          if (res.body.done) {
+            onProgress(1);
+            const sent = res.body.file as ChatFile;
+            return { ...sent, url: `/files/${sent.id}` };
+          }
+          offset = res.body.received as number;
+          onProgress(offset / file.size);
+          continue;
         }
-      };
-      xhr.onerror = () => reject(new UploadError(`O envio de “${file.name}” falhou. Confira a conexão.`));
-      xhr.onabort = () => reject(new UploadError('cancelado'));
-      xhr.send(file);
+        // Erro definitivo (envio sumiu, arquivo grande demais...): para.
+        if (res && res.status !== 409 && res.status < 500 && res.status !== 429 && res.status !== 0) failWith(res.status, res.body);
+        // Caiu a internet, servidor reiniciando ou parte fora de ordem: espera e
+        // pergunta ao servidor onde parou.
+        failures += 1;
+        if (failures > 8) throw new UploadError(`O envio de “${file.name}” falhou. Confira a conexão.`);
+        const wait = res?.status === 409 ? 500 : Math.min(15_000, 1000 * 2 ** (failures - 1));
+        await new Promise((r) => setTimeout(r, wait));
+        try {
+          const st = await request('GET', `${site}/files/upload/${uploadId}`, null);
+          if (st.status === 404) failWith(st.status, st.body);
+          if (st.status === 200) offset = st.body.received as number;
+        } catch (err) {
+          if (err instanceof UploadError && err.message !== 'rede') throw err;
+        }
+      }
+    };
+
+    const drop = () => {
+      if (uploadId) void fetch(`${site}/files/upload/${uploadId}`, { method: 'DELETE' }).catch(() => {});
+    };
+    // Falhou ou cancelou no meio: libera o espaço reservado no servidor.
+    const promise = run().catch((err) => {
+      drop();
+      throw err;
     });
-    return { promise, abort: () => xhr.abort() };
+    return {
+      promise,
+      abort: () => {
+        aborted = true;
+        current?.abort();
+        drop();
+      },
+    };
   }
 
   // ---------------------------------------------------------------- perfil e volumes
