@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld('discordia', {
   selectScreenSource: (id, audio) => ipcRenderer.invoke('screen:select', id, audio),
   setTheme: (theme) => ipcRenderer.send('window:theme', theme),
   info: () => ipcRenderer.invoke('app:info'),
+  setHotkeys: (list) => ipcRenderer.invoke('hotkeys:set', list),
+  onHotkey: (fn) => ipcRenderer.on('hotkey', (_event, id, phase) => fn(id, phase)),
 });

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Loader2, WifiOff, X } from 'lucide-react';
 import { call } from './lib/call';
+import { hotkeys } from './lib/hotkeys';
+import { music } from './lib/music';
 import { useStore } from './lib/store';
 import { TitleBar } from './components/TitleBar';
 import { Home } from './components/Home';
@@ -41,20 +43,26 @@ function Room({ onSettings }: { onSettings: () => void }) {
   const status = useStore(call.store, (s) => s.status);
   const error = useStore(call.store, (s) => s.error);
 
-  // Atalhos: Ctrl+Shift+M muta, Ctrl+Shift+D ensurdece.
+  // Teclas de atalho (configuráveis em Configurações → Atalhos).
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
-      if (e.code === 'KeyM') {
-        e.preventDefault();
-        call.toggleMute();
-      } else if (e.code === 'KeyD') {
-        e.preventDefault();
-        call.toggleDeafen();
-      }
+    const offs = [
+      hotkeys.on('toggleMute', () => call.toggleMute()),
+      hotkeys.on('toggleDeafen', () => call.toggleDeafen()),
+      hotkeys.on('pushToTalk', (phase) => call.setPushToTalk(phase === 'down')),
+      hotkeys.on('pushToMute', (phase) => call.setPushToMute(phase === 'down')),
+      hotkeys.on('toggleScreen', () => {
+        if (call.store.get().localScreen) call.stopScreen();
+        else setPicker((open) => !open);
+      }),
+      hotkeys.on('toggleChat', () => togglePanel('chat')),
+      hotkeys.on('musicPlayPause', () => music.togglePlay()),
+      hotkeys.on('musicSkip', () => music.op('skip')),
+    ];
+    return () => {
+      for (const off of offs) off();
+      call.setPushToTalk(false);
+      call.setPushToMute(false);
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   return (

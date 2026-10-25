@@ -12,6 +12,9 @@ export interface DesktopBridge {
   selectScreenSource(id: string, audio: boolean): Promise<void>;
   setTheme(theme: 'light' | 'dark'): void;
   info(): Promise<{ version: string; platform: string; systemAudio: boolean }>;
+  /** Atalhos fora da janela (versões mais novas do app). */
+  setHotkeys?(list: { id: string; binding: string; hold: boolean }[]): Promise<{ mode: 'hook' | 'shortcut' | 'off'; failed: string[] }>;
+  onHotkey?(fn: (id: string, phase: 'down' | 'up') => void): void;
 }
 
 declare global {

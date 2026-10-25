@@ -357,7 +357,7 @@ class AudioEngine {
 
   // ---- Sons de interface (sintetizados, sem arquivo) ----
 
-  chime(kind: 'join' | 'leave' | 'mute' | 'unmute' | 'message') {
+  chime(kind: 'join' | 'leave' | 'mute' | 'unmute' | 'message' | 'ptt-on' | 'ptt-off') {
     const ctx = this.ensure();
     const notes: Record<typeof kind, number[]> = {
       join: [523.25, 783.99],
@@ -365,7 +365,10 @@ class AudioEngine {
       mute: [440, 330],
       unmute: [330, 494],
       message: [880],
+      'ptt-on': [740],
+      'ptt-off': [494],
     };
+    const soft = kind === 'message' || kind.startsWith('ptt');
     const t0 = ctx.currentTime + 0.01;
     notes[kind].forEach((freq, i) => {
       const osc = ctx.createOscillator();
@@ -374,8 +377,8 @@ class AudioEngine {
       osc.frequency.value = freq;
       const start = t0 + i * 0.09;
       env.gain.setValueAtTime(0, start);
-      env.gain.linearRampToValueAtTime(kind === 'message' ? 0.05 : 0.08, start + 0.012);
-      env.gain.exponentialRampToValueAtTime(0.0001, start + 0.22);
+      env.gain.linearRampToValueAtTime(soft ? (kind === 'message' ? 0.05 : 0.025) : 0.08, start + 0.012);
+      env.gain.exponentialRampToValueAtTime(0.0001, start + (kind.startsWith('ptt') ? 0.08 : 0.22));
       osc.connect(env);
       env.connect(this.master!);
       osc.start(start);

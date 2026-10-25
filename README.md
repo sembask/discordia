@@ -28,6 +28,8 @@ sem cadastro e sem anúncio. A voz e a tela vão **direto de um PC pro outro**
   pular, voltar, pausar, embaralhar, repetir, arrastar pra reordenar,
   volume próprio da música e **abaixa sozinha quando alguém fala**. Mini-player
   no canto ou "assistir junto" em tela grande.
+- **Teclas de atalho configuráveis**, inclusive **apertar pra falar** e
+  "segurar pra mutar", funcionando com o jogo em primeiro plano (app instalado).
 - **Tema claro, escuro ou do sistema.**
 - **Apps para Windows, macOS e Linux**, e uma versão web (entra pelo navegador
   sem instalar).
@@ -239,7 +241,27 @@ assinatura é pago), então o sistema avisa uma vez:
    **Transmitir**. Duplo clique no vídeo de um amigo abre em tela cheia; passe o
    mouse por cima pra ver resolução, fps, bitrate e codec ao vivo.
 
-Atalhos: `Ctrl+Shift+M` muta, `Ctrl+Shift+D` ensurdece.
+### Teclas de atalho
+
+Em **Configurações → Atalhos** cada um escolhe as suas: clique no atalho e
+aperte a tecla (vale combinação, uma tecla sozinha como o Ctrl da direita, ou o
+botão lateral do mouse). Esc cancela. Dá pra configurar:
+
+- ligar/desligar microfone (padrão `Ctrl+Shift+M`) e ensurdecer (padrão `Ctrl+Shift+D`);
+- **apertar pra falar**: com esse modo ligado (também no painel de voz), o
+  microfone só abre enquanto a tecla está apertada, com um atraso ao soltar
+  pra não cortar o fim da palavra;
+- **segurar pra mutar**: fica mudo só enquanto segura;
+- compartilhar/parar tela, abrir/fechar chat, tocar/pausar e pular música.
+
+No **app instalado** os atalhos funcionam com qualquer janela em foco
+(inclusive jogos em tela cheia), sem "roubar" a tecla do jogo. No navegador só
+funcionam com a aba do Discordia em foco. Tecla sem Ctrl/Alt (ex.: `K`) não
+dispara enquanto você digita no chat.
+
+> **macOS**: pra "apertar pra falar" funcionar com outro app em foco, libere o
+> Discordia em *Ajustes do Sistema → Privacidade e Segurança → Acessibilidade*.
+> Sem isso, fora da janela só funcionam os atalhos de apertar uma vez.
 
 ### Quanto de internet precisa
 

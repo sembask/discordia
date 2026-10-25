@@ -86,6 +86,10 @@ export interface CallState {
   unread: number;
   muted: boolean;
   deafened: boolean;
+  /** Modo "apertar pra falar": a tecla está apertada agora (microfone aberto). */
+  pttHeld: boolean;
+  /** "Segurar pra mutar" apertado agora. */
+  pushToMuteHeld: boolean;
   micError: string | null;
   localScreen: MediaStream | null;
   localScreenOptions: ScreenOptions | null;
@@ -158,6 +162,8 @@ function initialState(): CallState {
     unread: 0,
     muted: false,
     deafened: false,
+    pttHeld: false,
+    pushToMuteHeld: false,
     micError: null,
     localScreen: null,
     localScreenOptions: null,
@@ -260,9 +266,57 @@ class Call {
   /** Recursos que o servidor oferece (ex.: busca de música). */
   features: { search?: boolean; files?: { maxBytes: number; ttlMs: number; chunkBytes: number } } = {};
 
+  private pttTimer: number | null = null;
+
   constructor() {
     audio.onSpeaking((speaking) => this.store.set({ speaking }));
-    audio.localTrackEnabled = () => !this.store.get().muted;
+    audio.localTrackEnabled = () => this.micOpen();
+    let ptt = settings.get().pushToTalk;
+    settings.subscribe(() => {
+      if (settings.get().pushToTalk === ptt) return;
+      ptt = settings.get().pushToTalk;
+      this.applyMicGate();
+    });
+  }
+
+  /** O microfone está mandando som agora? (mudo, apertar pra falar, segurar pra mutar) */
+  micOpen(): boolean {
+    const s = this.store.get();
+    if (s.muted || s.pushToMuteHeld) return false;
+    return !settings.get().pushToTalk || s.pttHeld;
+  }
+
+  private applyMicGate() {
+    const open = this.micOpen();
+    for (const t of this.micOut.getAudioTracks()) t.enabled = open;
+  }
+
+  /** Tecla de "apertar pra falar" apertada/solta. Soltar espera um pouquinho pra não cortar a palavra. */
+  setPushToTalk(held: boolean) {
+    if (this.pttTimer !== null) {
+      clearTimeout(this.pttTimer);
+      this.pttTimer = null;
+    }
+    if (held) {
+      if (!this.store.get().pttHeld) {
+        this.store.set({ pttHeld: true });
+        this.applyMicGate();
+        if (settings.get().pushToTalk && settings.get().sounds && !this.store.get().muted) audio.chime('ptt-on');
+      }
+      return;
+    }
+    if (!this.store.get().pttHeld) return;
+    this.pttTimer = window.setTimeout(() => {
+      this.pttTimer = null;
+      this.store.set({ pttHeld: false });
+      this.applyMicGate();
+      if (settings.get().pushToTalk && settings.get().sounds && !this.store.get().muted) audio.chime('ptt-off');
+    }, Math.max(0, settings.get().pttReleaseMs));
+  }
+
+  setPushToMute(held: boolean) {
+    this.store.set({ pushToMuteHeld: held });
+    this.applyMicGate();
   }
 
   // ---------------------------------------------------------------- sala
@@ -782,7 +836,7 @@ class Call {
     if (chain) {
       track = chain.track;
       track.contentHint = s.hifi ? 'music' : 'speech';
-      track.enabled = !this.store.get().muted;
+      track.enabled = this.micOpen();
       this.micOut.addTrack(track);
     }
     audio.setLocal(track);
@@ -810,7 +864,7 @@ class Call {
 
   private setVoice(muted: boolean, deafened: boolean) {
     this.store.set({ muted, deafened });
-    for (const t of this.micOut.getAudioTracks()) t.enabled = !muted;
+    this.applyMicGate();
     audio.setDeafened(deafened);
     this.broadcastState();
   }

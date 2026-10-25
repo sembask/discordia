@@ -275,18 +275,24 @@ export function Popover({ onClose, className, children }: { onClose: () => void;
   );
 }
 
-/** Controle deslizante com rótulo e porcentagem. */
+/** Controle deslizante com rótulo e porcentagem (ou outro formato). */
 export function Slider({
   label,
   icon,
   value,
+  min = 0,
   max = 2,
+  step = 0.01,
+  format = (v: number) => `${Math.round(v * 100)}%`,
   onChange,
 }: {
   label: string;
   icon?: ReactNode;
   value: number;
+  min?: number;
   max?: number;
+  step?: number;
+  format?: (v: number) => string;
   onChange: (v: number) => void;
 }) {
   return (
@@ -295,9 +301,9 @@ export function Slider({
         <span className="flex items-center gap-1.5">
           {icon} {label}
         </span>
-        <span className="tabular-nums">{Math.round(value * 100)}%</span>
+        <span className="tabular-nums">{format(value)}</span>
       </span>
-      <input type="range" min={0} max={max} step={0.01} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full" />
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} className="w-full" />
     </label>
   );
 }

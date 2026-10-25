@@ -67,7 +67,14 @@
       "owner": "sembask",
       "repo": "discordia",
       "releaseType": "release"
-    }
+    },
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "npmRebuild": false
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
   },
   "devDependencies": {
     "@fontsource-variable/inter": "^5.2.8",

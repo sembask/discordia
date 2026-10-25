@@ -13,6 +13,8 @@ const {
   systemPreferences,
   protocol,
   net,
+  globalShortcut,
+  utilityProcess,
 } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -222,6 +224,170 @@ function setupIpc() {
   }));
 }
 
+// ------------------------------------------------------------------ atalhos globais
+//
+// Preferência: o processo auxiliar (uiohook) que escuta o sistema todo, sem
+// "roubar" a tecla dos outros programas e com suporte a segurar (apertar pra
+// falar) e a botões laterais do mouse. Se ele não funcionar, cai pro
+// globalShortcut do Electron: só atalhos de apertar uma vez.
+
+let hookProc = null;
+/** 'unknown' até testar; 'ok' funcionando; 'broken' não usa mais nesta sessão. */
+// DISCORDIA_NO_HOOK=1 força o modo simples (diagnóstico e testes).
+let hookState = process.env.DISCORDIA_NO_HOOK ? 'broken' : 'unknown';
+let hookWaiters = [];
+let hotkeyList = [];
+
+const ACCEL_KEYS = {
+  Space: 'Space',
+  Enter: 'Enter',
+  Tab: 'Tab',
+  Backspace: 'Backspace',
+  Escape: 'Escape',
+  Delete: 'Delete',
+  Insert: 'Insert',
+  Home: 'Home',
+  End: 'End',
+  PageUp: 'PageUp',
+  PageDown: 'PageDown',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right',
+  Backquote: '`',
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
+  NumpadAdd: 'numadd',
+  NumpadSubtract: 'numsub',
+  NumpadMultiply: 'nummult',
+  NumpadDivide: 'numdiv',
+  NumpadDecimal: 'numdec',
+  PrintScreen: 'PrintScreen',
+};
+
+/** "Ctrl+Shift+KeyM" → "Control+Shift+M" (null se o Electron não aceita, ex.: mouse). */
+function toAccelerator(binding) {
+  const parts = binding.split('+').filter(Boolean);
+  const key = parts.pop();
+  let k = null;
+  if (/^Key[A-Z]$/.test(key)) k = key.slice(3);
+  else if (/^Digit\d$/.test(key)) k = key.slice(5);
+  else if (/^F\d{1,2}$/.test(key)) k = key;
+  else if (/^Numpad\d$/.test(key)) k = `num${key.slice(6)}`;
+  else k = ACCEL_KEYS[key] ?? null;
+  if (!k) return null;
+  const mods = { Ctrl: 'Control', Alt: 'Alt', Shift: 'Shift', Meta: 'Super' };
+  return [...parts.map((p) => mods[p]).filter(Boolean), k].join('+');
+}
+
+function sendHotkey(id, phase) {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('hotkey', id, phase);
+}
+
+function startHook() {
+  if (hookProc || hookState === 'broken') return;
+  // macOS: sem permissão de Acessibilidade o sistema não entrega as teclas.
+  if (IS_MAC && !systemPreferences.isTrustedAccessibilityClient(false)) {
+    hookState = 'broken';
+    return;
+  }
+  try {
+    hookProc = utilityProcess.fork(path.join(__dirname, 'hotkeys-worker.cjs'), [], { serviceName: 'Discordia Atalhos' });
+  } catch {
+    hookState = 'broken';
+    return;
+  }
+  hookProc.on('message', (msg) => {
+    if (msg?.type === 'hotkey') {
+      // Com a janela em foco a própria interface já vê a tecla apertada.
+      if (msg.phase === 'down' && win && !win.isDestroyed() && win.isFocused()) return;
+      sendHotkey(msg.id, msg.phase);
+    } else if (msg?.type === 'ready' || msg?.type === 'error') {
+      hookState = msg.type === 'ready' ? 'ok' : 'broken';
+      if (hookState === 'broken') hookProc?.kill();
+      for (const w of hookWaiters.splice(0)) w();
+    }
+  });
+  hookProc.on('exit', () => {
+    hookProc = null;
+    if (hookState !== 'off') {
+      hookState = 'broken';
+      for (const w of hookWaiters.splice(0)) w();
+      // Caiu no meio do uso: passa pros atalhos simples na hora.
+      if (hotkeyList.length) applyShortcuts();
+    }
+  });
+}
+
+/** Manda a lista pro processo auxiliar e espera ele confirmar (até 2 s). */
+function setHook(list) {
+  return new Promise((resolve) => {
+    if (!hookProc) return resolve(false);
+    const timer = setTimeout(() => {
+      hookState = 'broken';
+      hookProc?.kill();
+      resolve(false);
+    }, 2000);
+    hookWaiters.push(() => {
+      clearTimeout(timer);
+      resolve(hookState === 'ok');
+    });
+    hookProc.postMessage({ type: 'set', list });
+  });
+}
+
+function applyShortcuts() {
+  globalShortcut.unregisterAll();
+  const failed = [];
+  for (const item of hotkeyList) {
+    if (item.hold) continue; // segurar não existe no globalShortcut
+    const accel = toAccelerator(item.binding);
+    let ok = false;
+    if (accel) {
+      try {
+        ok = globalShortcut.register(accel, () => sendHotkey(item.id, 'down'));
+      } catch {
+        ok = false;
+      }
+    }
+    if (!ok) failed.push(item.id);
+  }
+  return failed;
+}
+
+function setupHotkeys() {
+  ipcMain.handle('hotkeys:set', async (_event, list) => {
+    hotkeyList = Array.isArray(list)
+      ? list.filter((i) => i && typeof i.id === 'string' && typeof i.binding === 'string').slice(0, 32)
+      : [];
+    if (!hotkeyList.length) {
+      globalShortcut.unregisterAll();
+      if (hookProc) await setHook([]);
+      return { mode: 'off', failed: [] };
+    }
+    startHook();
+    if (hookState !== 'broken' && (await setHook(hotkeyList))) {
+      globalShortcut.unregisterAll();
+      return { mode: 'hook', failed: [] };
+    }
+    return { mode: 'shortcut', failed: applyShortcuts() };
+  });
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
+    hookState = 'off';
+    hookProc?.kill();
+  });
+}
+
 app.on('second-instance', () => {
   if (!win) return;
   if (win.isMinimized()) win.restore();
@@ -239,6 +405,7 @@ app.whenReady().then(async () => {
   serveApp();
   setupPermissions();
   setupIpc();
+  setupHotkeys();
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

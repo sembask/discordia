@@ -7,6 +7,7 @@ import { settings } from '../lib/settings';
 import { useStore } from '../lib/store';
 import { useDevices } from './SettingsModal';
 import { NoiseControls } from './NoiseControls';
+import { InputModeControl } from './HotkeysTab';
 import { Avatar, Button, Popover, Select, Slider, TextInput, Toggle } from './ui';
 
 /** Ajustes rápidos de voz, abertos pelo painel do usuário (canto inferior). */
@@ -45,6 +46,7 @@ export function VoicePopover({ onClose, onMore }: { onClose: () => void; onMore:
       </div>
       <Slider label="Volume do que eu ouço" icon={<Volume2 size={13} />} value={s.outputVolume} onChange={(v) => call.setOutputVolume(v)} />
 
+      <InputModeControl compact />
       <NoiseControls compact />
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium">Alta fidelidade (música)</span>

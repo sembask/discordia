@@ -1,4 +1,5 @@
 import { createStore } from './store';
+import { DEFAULT_HOTKEYS, type HotkeyMap } from './hotkey-map';
 
 export type Theme = 'light' | 'dark' | 'system';
 export type VideoCodec = 'auto' | 'h264' | 'vp9' | 'av1';
@@ -38,6 +39,14 @@ export interface Settings {
   musicMuted: boolean;
   /** Abaixa a música enquanto alguém fala. */
   musicDuck: boolean;
+  /** Teclas de atalho (null = sem atalho). */
+  hotkeys: HotkeyMap;
+  /** App instalado: atalhos valem com outra janela (jogo) em foco. */
+  globalHotkeys: boolean;
+  /** Microfone só abre enquanto segura a tecla de "apertar pra falar". */
+  pushToTalk: boolean;
+  /** Espera um pouco depois de soltar, pra não cortar o fim da palavra. */
+  pttReleaseMs: number;
 }
 
 const KEY = 'discordia.settings';
@@ -104,6 +113,10 @@ const DEFAULTS: Settings = {
   musicVolume: 60,
   musicMuted: false,
   musicDuck: true,
+  hotkeys: { ...DEFAULT_HOTKEYS },
+  globalHotkeys: true,
+  pushToTalk: false,
+  pttReleaseMs: 150,
 };
 
 function load(): Settings {
@@ -113,7 +126,12 @@ function load(): Settings {
     if (raw.noiseMode === undefined && raw.noiseSuppression === false) raw.noiseMode = 'off';
     delete raw.noiseSuppression;
     // Na versão web o servidor é sempre o próprio site.
-    return { ...DEFAULTS, ...raw, ...(isWeb ? { serverUrl: DEFAULTS.serverUrl } : {}) };
+    return {
+      ...DEFAULTS,
+      ...raw,
+      hotkeys: { ...DEFAULT_HOTKEYS, ...(raw.hotkeys ?? {}) },
+      ...(isWeb ? { serverUrl: DEFAULTS.serverUrl } : {}),
+    };
   } catch {
     return { ...DEFAULTS };
   }

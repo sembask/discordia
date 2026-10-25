@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { AudioLines, Monitor, Moon, Palette, Server, Sun, Video } from 'lucide-react';
+import { AudioLines, Keyboard, Monitor, Moon, Palette, Server, Sun, Video } from 'lucide-react';
+import { HotkeysTab } from './HotkeysTab';
 import { call } from '../lib/call';
 import { isWeb, settings, type Settings } from '../lib/settings';
 import { useStore } from '../lib/store';
@@ -7,11 +8,12 @@ import { audio } from '../lib/audio';
 import { NoiseControls } from './NoiseControls';
 import { Field, Modal, Segmented, Select, Slider, TextInput, Toggle, cx } from './ui';
 
-type Tab = 'appearance' | 'voice' | 'video' | 'server';
+type Tab = 'appearance' | 'voice' | 'hotkeys' | 'video' | 'server';
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: 'appearance', label: 'Aparência', icon: <Palette size={16} /> },
   { id: 'voice', label: 'Voz e áudio', icon: <AudioLines size={16} /> },
+  { id: 'hotkeys', label: 'Atalhos', icon: <Keyboard size={16} /> },
   { id: 'video', label: 'Vídeo', icon: <Video size={16} /> },
   { id: 'server', label: 'Servidor', icon: <Server size={16} /> },
 ];
@@ -44,6 +46,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         <div className="min-w-0 flex-1 space-y-6 p-4 sm:p-6">
           {tab === 'appearance' && <Appearance />}
           {tab === 'voice' && <Voice />}
+          {tab === 'hotkeys' && <HotkeysTab />}
           {tab === 'video' && <VideoTab />}
           {tab === 'server' && <ServerTab />}
         </div>

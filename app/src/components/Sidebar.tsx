@@ -6,6 +6,7 @@ import { useStore } from '../lib/store';
 import { Avatar, IconButton, cx } from './ui';
 import { ProfilePopover, VoicePopover } from './UserPopovers';
 import { music, titleOf } from '../lib/music';
+import { bindingLabel } from '../lib/hotkeys';
 
 function NowPlayingLine() {
   const line = useStore(music.store, (s) => {
@@ -181,7 +182,26 @@ function UserPanel({ onSettings }: { onSettings: () => void }) {
   const speaking = useStore(call.store, (s) => !!s.speaking.self);
   const name = useStore(settings, (s) => s.name);
   const avatar = useStore(settings, (s) => s.avatar);
+  const pttMode = useStore(settings, (s) => s.pushToTalk);
+  const keys = useStore(settings, (s) => s.hotkeys);
+  const pttHeld = useStore(call.store, (s) => s.pttHeld);
+  const pushToMute = useStore(call.store, (s) => s.pushToMuteHeld);
   const [open, setOpen] = useState<'voice' | 'profile' | null>(null);
+  const shortcut = (text: string | null) => (text ? ` (${bindingLabel(text)})` : '');
+  const status = deafened
+    ? 'Ensurdecido'
+    : muted
+      ? 'Mutado'
+      : pushToMute
+        ? 'Mudo enquanto segura'
+        : pttMode
+          ? pttHeld
+            ? 'Falando…'
+            : keys.pushToTalk
+              ? `Aperte ${bindingLabel(keys.pushToTalk)} pra falar`
+              : 'Apertar pra falar: escolha a tecla'
+          : 'Mic aberto';
+  const silent = muted || pushToMute || (pttMode && !pttHeld);
   return (
     <div className="relative border-t border-line bg-panel-2/60 p-2">
       {micError && <div className="mb-2 rounded-lg bg-danger-soft px-3 py-2 text-xs font-medium text-danger">{micError}</div>}
@@ -193,16 +213,18 @@ function UserPanel({ onSettings }: { onSettings: () => void }) {
           title="Editar nome e foto"
           className="flex min-w-0 flex-1 items-center gap-2 rounded-xl p-1 text-left transition-colors hover:bg-hover"
         >
-          <Avatar name={name || 'Você'} src={avatar} size={32} speaking={speaking && !muted} />
+          <Avatar name={name || 'Você'} src={avatar} size={32} speaking={speaking && !silent} />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-semibold">{name}</span>
-            <span className="block truncate text-xs text-muted">{deafened ? 'Ensurdecido' : muted ? 'Mutado' : 'Mic aberto'}</span>
+            <span className={cx('block truncate text-xs', pttMode && pttHeld && !muted ? 'font-semibold text-success' : 'text-muted')} title={status}>
+              {status}
+            </span>
           </span>
         </button>
-        <IconButton label={muted ? 'Desmutar' : 'Mutar'} danger={muted} onClick={() => call.toggleMute()} className="size-8">
+        <IconButton label={(muted ? 'Desmutar' : 'Mutar') + shortcut(keys.toggleMute)} danger={muted} onClick={() => call.toggleMute()} className="size-8">
           {muted ? <MicOff size={16} /> : <Mic size={16} />}
         </IconButton>
-        <IconButton label={deafened ? 'Voltar a ouvir' : 'Ensurdecer'} danger={deafened} onClick={() => call.toggleDeafen()} className="size-8">
+        <IconButton label={(deafened ? 'Voltar a ouvir' : 'Ensurdecer') + shortcut(keys.toggleDeafen)} danger={deafened} onClick={() => call.toggleDeafen()} className="size-8">
           {deafened ? <HeadphoneOff size={16} /> : <Headphones size={16} />}
         </IconButton>
         <IconButton
