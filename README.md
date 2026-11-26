@@ -15,6 +15,9 @@ sem cadastro e sem anúncio. A voz e a tela vão **direto de um PC pro outro**
   Modo "Movimento" (jogo/vídeo) ou "Texto" (código/documento nítido). Escolhe
   sozinho o codec que sua placa de vídeo faz em hardware (AV1, VP9 ou H.264).
   No Windows, transmite também o **áudio do computador**.
+  Como no Discord, a tela de quem transmite **começa oculta**: cada um clica
+  em "Assistir" (ou "Parar de assistir" pra esconder de novo), e quem não
+  assiste nem recebe o vídeo, o que poupa a internet de quem transmite.
 - **Chat de texto com imagens** (botão, Ctrl+V ou arrastar), histórico curto e
   links clicáveis.
 - **Mandar arquivos** de qualquer tipo pelo chat (clipe, arrastar ou colar,

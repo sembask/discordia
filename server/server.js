@@ -145,6 +145,10 @@ function sanitizeState(raw) {
     deafened: !!s.deafened,
     screen: typeof s.screen === 'string' && s.screen.length <= 128 ? s.screen : null,
     screenAudio: !!s.screenAudio,
+    // de quem a pessoa assiste a tela; null = app antigo (assiste tudo)
+    watching: Array.isArray(s.watching)
+      ? s.watching.filter((id) => typeof id === 'string' && id.length <= 128).slice(0, 64)
+      : null,
   };
 }
 

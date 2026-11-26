@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Copy, Link2, SlidersHorizontal, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, Signal, Volume2, WifiOff } from 'lucide-react';
+import { Check, Copy, Eye, EyeOff, Link2, SlidersHorizontal, Headphones, HeadphoneOff, Mic, MicOff, MonitorUp, Signal, Volume2, WifiOff } from 'lucide-react';
 import { call, type RemotePeer } from '../lib/call';
 import { inviteLink, settings } from '../lib/settings';
 import { useStore } from '../lib/store';
@@ -139,6 +139,7 @@ function RemoteRow({ peer, speaking }: { peer: RemotePeer; speaking: boolean }) 
   const [open, setOpen] = useState(false);
   const volume = useStore(settings, (s) => s.userVolumes[peer.name] ?? 1);
   const weak = peer.connection !== 'connected';
+  const watching = useStore(call.store, (s) => !!s.watching[peer.id]);
   return (
     <div>
       <MemberRow
@@ -169,6 +170,15 @@ function RemoteRow({ peer, speaking }: { peer: RemotePeer; speaking: boolean }) 
             onChange={(e) => call.setUserVolume(peer.id, Number(e.target.value))}
             className="w-full"
           />
+          {peer.state.screen && (
+            <button
+              onClick={() => call.setWatching(peer.id, !watching)}
+              className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg bg-hover px-2 py-1.5 text-xs font-semibold hover:text-accent"
+            >
+              {watching ? <EyeOff size={13} /> : <Eye size={13} />}
+              {watching ? 'Parar de assistir' : 'Assistir a tela'}
+            </button>
+          )}
         </div>
       )}
     </div>

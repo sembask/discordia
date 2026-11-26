@@ -18,6 +18,12 @@ export interface PeerMediaState {
   /** id do MediaStream da tela, ou null se não está transmitindo. */
   screen: string | null;
   screenAudio: boolean;
+  /**
+   * De quem estou assistindo a tela (ids). Quem não está na lista não recebe
+   * o vídeo: quem transmite desliga o envio pra ele. null = app antigo, que
+   * assiste tudo.
+   */
+  watching?: string[] | null;
 }
 
 export interface RemotePeer {
@@ -93,6 +99,8 @@ export interface CallState {
   micError: string | null;
   localScreen: MediaStream | null;
   localScreenOptions: ScreenOptions | null;
+  /** Telas que estou assistindo (id do amigo, ou 'self' pra prévia da minha). Fora daqui = oculta, como no Discord. */
+  watching: Record<string, true>;
   speaking: Record<string, boolean>;
 }
 
@@ -167,6 +175,7 @@ function initialState(): CallState {
     micError: null,
     localScreen: null,
     localScreenOptions: null,
+    watching: {},
     speaking: {},
   };
 }
@@ -476,8 +485,13 @@ class Call {
       case 'state': {
         const peer = this.store.get().peers[msg.id];
         if (!peer) return;
+        // parou de transmitir: deixa de "assistir" (a próxima transmissão começa oculta)
+        if (!msg.state.screen && this.store.get().watching[msg.id]) this.setWatchingSilently(msg.id, false);
         this.store.set((s) => ({ peers: { ...s.peers, [msg.id]: { ...peer, state: msg.state } } }));
         this.refreshPeerMedia(msg.id);
+        // ele passou a assistir (ou parou) a minha tela: liga/desliga o envio pra ele
+        const rtc = this.peers.get(msg.id);
+        if (rtc && this.screen) void this.tuneSenders(rtc);
         return;
       }
       case 'signal':
@@ -672,7 +686,9 @@ class Call {
       }
     }
     audio.setSource(`${id}:mic`, mic);
-    const screenAudio = screen?.getAudioTracks().find((t) => t.readyState === 'live') ?? null;
+    // tela que não estou assistindo também não toca o som dela
+    const watching = !!this.store.get().watching[id];
+    const screenAudio = watching ? (screen?.getAudioTracks().find((t) => t.readyState === 'live') ?? null) : null;
     audio.setSource(`${id}:screen`, screenAudio);
     const screenStream = screen && screen.getVideoTracks().some((t) => t.readyState === 'live') ? screen : null;
     if (remote.screenStream !== screenStream) {
@@ -687,6 +703,7 @@ class Call {
       this.peers.delete(id);
     }
     audio.removePeer(id);
+    this.setWatchingSilently(id, false);
     this.store.set((s) => {
       const peers = { ...s.peers };
       delete peers[id];
@@ -700,7 +717,7 @@ class Call {
       audio.removePeer(id);
     }
     this.peers.clear();
-    this.store.set({ peers: {} });
+    this.store.set((s) => ({ peers: {}, watching: (s.watching.self ? { self: true } : {}) as Record<string, true> }));
   }
 
   /** Limites de bitrate e prioridades dos envios (voz e tela). */
@@ -714,6 +731,10 @@ class Call {
     const opts = this.screenOpts;
     const video = this.screen?.getVideoTracks()[0];
     if (!opts || !video) return;
+    // só manda a tela pra quem está assistindo (economiza o upload de quem transmite)
+    const remote = this.store.get().peers[peer.id]?.state;
+    const selfId = this.store.get().selfId;
+    const watched = remote?.watching == null || (!!selfId && remote.watching.includes(selfId));
     const { width = 1920, height = 1080, frameRate } = video.getSettings();
     const fps = Math.min(opts.fps, Math.round(frameRate ?? opts.fps)) || opts.fps;
     for (const sender of peer.screenSenders) {
@@ -721,6 +742,7 @@ class Call {
         await this.setSenderParams(
           sender,
           (enc) => {
+            enc.active = watched;
             enc.maxBitrate = videoBitrateKbps(width, height, fps, opts.mode) * 1000;
             enc.maxFramerate = opts.fps;
             enc.scaleResolutionDownBy = 1;
@@ -731,6 +753,7 @@ class Call {
         );
       } else if (sender.track?.kind === 'audio') {
         await this.setSenderParams(sender, (enc) => {
+          enc.active = watched;
           enc.maxBitrate = SCREEN_AUDIO_BITRATE;
         });
       }
@@ -779,7 +802,26 @@ class Call {
       deafened: s.deafened,
       screen: this.screen?.id ?? null,
       screenAudio: !!this.screen?.getAudioTracks().length,
+      watching: Object.keys(s.watching).filter((id) => id !== 'self'),
     };
+  }
+
+  /** Assistir ou deixar de assistir a tela de alguém (id do amigo, ou 'self' pra prévia da minha). */
+  setWatching(id: string, on: boolean) {
+    if (!!this.store.get().watching[id] === on) return;
+    this.setWatchingSilently(id, on);
+    if (id === 'self') return;
+    this.refreshPeerMedia(id);
+    this.broadcastState();
+  }
+
+  private setWatchingSilently(id: string, on: boolean) {
+    this.store.set((s) => {
+      const watching = { ...s.watching };
+      if (on) watching[id] = true;
+      else delete watching[id];
+      return { watching };
+    });
   }
 
   private broadcastState() {
@@ -905,7 +947,7 @@ class Call {
     this.screenOpts = opts;
     this.broadcastState();
     for (const peer of this.peers.values()) this.attachScreen(peer);
-    this.store.set({ localScreen: stream, localScreenOptions: opts });
+    this.store.set((s) => ({ localScreen: stream, localScreenOptions: opts, watching: { ...s.watching, self: true } }));
   }
 
   private attachScreen(peer: Peer) {
@@ -941,6 +983,7 @@ class Call {
     for (const t of this.screen.getTracks()) t.stop();
     this.screen = null;
     this.screenOpts = null;
+    this.setWatchingSilently('self', false);
     this.store.set({ localScreen: null, localScreenOptions: null });
     if (announce) this.broadcastState();
   }

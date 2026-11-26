@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Eye,
+  EyeOff,
   Headphones,
   HeadphoneOff,
   Maximize2,
@@ -28,24 +30,50 @@ interface Share {
   key: string;
   peerId: string | null; // null = minha tela
   name: string;
-  stream: MediaStream;
+  avatar: string | null;
+  /** Nulo enquanto o vídeo ainda não chegou (ou quando não estou assistindo). */
+  stream: MediaStream | null;
   hasAudio: boolean;
+  /** Estou assistindo? Como no Discord, a tela dos outros começa oculta. */
+  watched: boolean;
 }
 
+/** Quem está transmitindo agora, assistindo ou não. */
 function useShares(): Share[] {
   const peers = useStore(call.store, (s) => s.peers);
   const local = useStore(call.store, (s) => s.localScreen);
+  const watching = useStore(call.store, (s) => s.watching);
   const name = useStore(settings, (s) => s.name);
+  const avatar = useStore(settings, (s) => s.avatar);
   const shares: Share[] = [];
   for (const p of Object.values(peers)) {
-    if (p.screenStream && p.state.screen) {
-      shares.push({ key: p.id, peerId: p.id, name: p.name, stream: p.screenStream, hasAudio: p.state.screenAudio });
-    }
+    if (!p.state.screen) continue;
+    shares.push({
+      key: p.id,
+      peerId: p.id,
+      name: p.name,
+      avatar: p.avatar,
+      stream: p.screenStream,
+      hasAudio: p.state.screenAudio,
+      watched: !!watching[p.id],
+    });
   }
   shares.sort((a, b) => a.name.localeCompare(b.name));
-  if (local) shares.push({ key: 'self', peerId: null, name: name || 'Você', stream: local, hasAudio: local.getAudioTracks().length > 0 });
+  if (local) {
+    shares.push({
+      key: 'self',
+      peerId: null,
+      name: name || 'Você',
+      avatar,
+      stream: local,
+      hasAudio: local.getAudioTracks().length > 0,
+      watched: !!watching.self,
+    });
+  }
   return shares;
 }
+
+const watchId = (share: Share) => share.peerId ?? 'self';
 
 /** Celular e alguns navegadores não conseguem capturar a tela (só assistir). */
 export const canShareScreen = !!navigator.mediaDevices?.getDisplayMedia;
@@ -66,8 +94,14 @@ export function Stage({
   const musicOn = useStore(music.store, (s) => !!s.state && s.state.index >= 0 && !s.state.ended);
   const musicView = useStore(music.store, (s) => s.view);
   const watching = musicOn && musicView === 'stage';
-  const focused = watching ? null : (shares.find((s) => s.key === focus) ?? shares.find((s) => s.peerId !== null) ?? shares[0] ?? null);
+  // no palco grande só vai tela que estou assistindo; as outras viram cartão "Assistir"
+  const live = shares.filter((s) => s.watched);
+  const focused = watching ? null : (live.find((s) => s.key === focus) ?? live.find((s) => s.peerId !== null) ?? live[0] ?? null);
   const others = shares.filter((s) => s !== focused);
+  const watch = (s: Share) => {
+    call.setWatching(watchId(s), true);
+    setFocus(s.key);
+  };
 
   return (
     <main className="relative flex min-w-0 flex-1 flex-col bg-stage">
@@ -77,18 +111,29 @@ export function Stage({
             <MusicStage onOpenPanel={() => onPanel('music')} />
             {others.length > 0 && (
               <div className="flex h-36 shrink-0 gap-3 overflow-x-auto">
-                {others.map((s) => (
-                  <button
-                    key={s.key}
-                    onClick={() => {
-                      music.setView('mini');
-                      setFocus(s.key);
-                    }}
-                    className="aspect-video h-full shrink-0"
-                  >
-                    <ScreenTile share={s} />
-                  </button>
-                ))}
+                {others.map((s) =>
+                  s.watched ? (
+                    <button
+                      key={s.key}
+                      onClick={() => {
+                        music.setView('mini');
+                        setFocus(s.key);
+                      }}
+                      className="aspect-video h-full shrink-0"
+                    >
+                      <ScreenTile share={s} />
+                    </button>
+                  ) : (
+                    <StreamCard
+                      key={s.key}
+                      share={s}
+                      onWatch={() => {
+                        music.setView('mini');
+                        watch(s);
+                      }}
+                    />
+                  ),
+                )}
               </div>
             )}
           </>
@@ -97,16 +142,20 @@ export function Stage({
             <ScreenTile share={focused} large />
             {others.length > 0 && (
               <div className="flex h-36 shrink-0 gap-3 overflow-x-auto">
-                {others.map((s) => (
-                  <button key={s.key} onClick={() => setFocus(s.key)} className="aspect-video h-full shrink-0">
-                    <ScreenTile share={s} />
-                  </button>
-                ))}
+                {others.map((s) =>
+                  s.watched ? (
+                    <button key={s.key} onClick={() => setFocus(s.key)} className="aspect-video h-full shrink-0">
+                      <ScreenTile share={s} />
+                    </button>
+                  ) : (
+                    <StreamCard key={s.key} share={s} onWatch={() => watch(s)} />
+                  ),
+                )}
               </div>
             )}
           </>
         ) : (
-          <VoiceGrid onShare={onShare} />
+          <VoiceGrid onShare={onShare} shares={shares} onWatch={watch} />
         )}
       </div>
       {musicOn && !watching && <MusicDock onOpenPanel={() => onPanel('music')} />}
@@ -125,7 +174,7 @@ function ScreenTile({ share, large }: { share: Share; large?: boolean }) {
     const el = ref.current;
     if (!el) return;
     el.srcObject = share.stream;
-    void el.play().catch(() => {});
+    if (share.stream) void el.play().catch(() => {});
   }, [share.stream]);
 
   useEffect(() => {
@@ -135,7 +184,7 @@ function ScreenTile({ share, large }: { share: Share; large?: boolean }) {
       if (share.peerId) {
         const s = await call.remoteVideoStats(share.peerId);
         if (alive) setStats(s);
-      } else {
+      } else if (share.stream) {
         const t = share.stream.getVideoTracks()[0];
         const st = t?.getSettings();
         if (alive && st) setStats({ width: st.width ?? 0, height: st.height ?? 0, fps: Math.round(st.frameRate ?? 0), kbps: 0, codec: '' });
@@ -165,6 +214,9 @@ function ScreenTile({ share, large }: { share: Share; large?: boolean }) {
     >
       {/* O áudio da tela toca pelo motor de áudio; o vídeo fica sempre mudo. */}
       <video ref={ref} autoPlay playsInline muted className="size-full object-contain" />
+      {!share.stream && (
+        <div className="absolute inset-0 grid place-items-center text-sm text-white/70">Carregando a transmissão…</div>
+      )}
 
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 bg-gradient-to-b from-black/60 to-transparent p-3 text-white">
         <span className="flex items-center gap-2 rounded-lg bg-black/40 px-2.5 py-1 text-sm font-semibold backdrop-blur">
@@ -191,6 +243,13 @@ function ScreenTile({ share, large }: { share: Share; large?: boolean }) {
             </div>
           )}
           <button
+            onClick={() => call.setWatching(watchId(share), false)}
+            title={share.peerId ? 'Parar de assistir (a tela some, como no Discord)' : 'Esconder a prévia da minha tela'}
+            className="flex h-8 items-center gap-1.5 rounded-lg bg-black/40 px-2.5 text-sm font-semibold backdrop-blur hover:bg-black/60"
+          >
+            <EyeOff size={16} /> {share.peerId ? 'Parar de assistir' : 'Esconder prévia'}
+          </button>
+          <button
             onClick={() => box.current?.requestFullscreen()}
             title="Tela cheia (ou duplo clique)"
             className="grid size-8 place-items-center rounded-lg bg-black/40 backdrop-blur hover:bg-black/60"
@@ -205,7 +264,33 @@ function ScreenTile({ share, large }: { share: Share; large?: boolean }) {
   );
 }
 
-function VoiceGrid({ onShare }: { onShare: () => void }) {
+/** Transmissão que não estou assistindo: cartão com "Assistir", como no Discord. */
+function StreamCard({ share, onWatch, big }: { share: Share; onWatch: () => void; big?: boolean }) {
+  return (
+    <div
+      className={cx(
+        'relative flex shrink-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-2xl border border-line bg-panel-2 p-3 text-center',
+        big ? 'aspect-video w-full max-w-md' : 'aspect-video h-full',
+      )}
+    >
+      <span className="absolute top-2 left-2 flex items-center gap-1.5 rounded-md bg-danger px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-white">
+        AO VIVO
+      </span>
+      <Avatar name={share.name} src={share.avatar} size={big ? 56 : 36} />
+      <span className="max-w-full truncate text-sm font-semibold">
+        {share.peerId ? `${share.name} está transmitindo` : 'Você está transmitindo'}
+      </span>
+      <button
+        onClick={onWatch}
+        className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-br from-accent to-accent-2 px-3 py-1.5 text-xs font-semibold text-white transition hover:brightness-110"
+      >
+        <Eye size={14} /> {share.peerId ? 'Assistir' : 'Mostrar prévia'}
+      </button>
+    </div>
+  );
+}
+
+function VoiceGrid({ onShare, shares, onWatch }: { onShare: () => void; shares: Share[]; onWatch: (s: Share) => void }) {
   const peers = useStore(call.store, (s) => s.peers);
   const speaking = useStore(call.store, (s) => s.speaking);
   const muted = useStore(call.store, (s) => s.muted);
@@ -237,6 +322,13 @@ function VoiceGrid({ onShare }: { onShare: () => void }) {
           </div>
         ))}
       </div>
+      {shares.length > 0 ? (
+        <div className="flex w-full max-w-3xl flex-wrap justify-center gap-4">
+          {shares.map((s) => (
+            <StreamCard key={s.key} share={s} onWatch={() => onWatch(s)} big />
+          ))}
+        </div>
+      ) : (
       <div className="text-center">
         <p className="text-sm text-muted">Ninguém está mostrando a tela.</p>
         {canShareScreen && <button
@@ -246,6 +338,7 @@ function VoiceGrid({ onShare }: { onShare: () => void }) {
           <MonitorUp size={17} /> Compartilhar minha tela
         </button>}
       </div>
+      )}
     </div>
   );
 }
